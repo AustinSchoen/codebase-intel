@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -64,29 +66,161 @@ type SummaryConfig struct {
 	RegenerateOnChg bool   `yaml:"regenerate_on_change"`
 }
 
+// Load reads config from CODEBASE_INTEL_CONFIG env var or config.yaml.
 func Load() (*Config, error) {
 	cfgPath := os.Getenv("CODEBASE_INTEL_CONFIG")
 	if cfgPath == "" {
 		cfgPath = "config.yaml"
 	}
+	return LoadFromFile(cfgPath)
+}
 
-	data, err := os.ReadFile(cfgPath)
+// LoadFromFile reads config from a specific path.
+func LoadFromFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading config %s: %w", cfgPath, err)
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
-
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-
-	if cfg.Indexing.ChunkMaxLines == 0 { cfg.Indexing.ChunkMaxLines = 200 }
-	if cfg.Indexing.ChunkOverlapLines == 0 { cfg.Indexing.ChunkOverlapLines = 20 }
-	if cfg.Indexing.BatchSize == 0 { cfg.Indexing.BatchSize = 128 }
-	if cfg.Indexing.ConcurrentReqs == 0 { cfg.Indexing.ConcurrentReqs = 10 }
-	if cfg.Embedding.Dimensions == 0 { cfg.Embedding.Dimensions = 1024 }
-	if cfg.Metadata.MaxConnections == 0 { cfg.Metadata.MaxConnections = 20 }
-	if cfg.Summaries.TopClasses == 0 { cfg.Summaries.TopClasses = 1000 }
-
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("config validation: %w", err)
+	}
 	return &cfg, nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.Indexing.ChunkMaxLines == 0 {
+		c.Indexing.ChunkMaxLines = 200
+	}
+	if c.Indexing.ChunkOverlapLines == 0 {
+		c.Indexing.ChunkOverlapLines = 20
+	}
+	if c.Indexing.BatchSize == 0 {
+		c.Indexing.BatchSize = 128
+	}
+	if c.Indexing.ConcurrentReqs == 0 {
+		c.Indexing.ConcurrentReqs = 10
+	}
+	if c.Embedding.Dimensions == 0 {
+		c.Embedding.Dimensions = 1024
+	}
+	if c.Embedding.Model == "" {
+		c.Embedding.Model = "voyage-code-3"
+	}
+	if c.Embedding.APIKeyEnv == "" {
+		c.Embedding.APIKeyEnv = "VOYAGE_API_KEY"
+	}
+	if c.Metadata.MaxConnections == 0 {
+		c.Metadata.MaxConnections = 20
+	}
+	if c.Metadata.Port == 0 {
+		c.Metadata.Port = 5432
+	}
+	if c.Summaries.TopClasses == 0 {
+		c.Summaries.TopClasses = 1000
+	}
+	if c.Vector.CollectionPrefix == "" {
+		c.Vector.CollectionPrefix = "codebase"
+	}
+}
+
+// Validate checks that required fields are present and values are sane.
+func (c *Config) Validate() error {
+	var errs []string
+
+	if c.Codebase.Path == "" {
+		errs = append(errs, "codebase.path is required")
+	} else {
+		absPath, err := filepath.Abs(c.Codebase.Path)
+		if err == nil {
+			c.Codebase.Path = absPath
+		}
+	}
+	if c.Codebase.Name == "" {
+		errs = append(errs, "codebase.name is required")
+	}
+	if len(c.Codebase.Languages) == 0 {
+		errs = append(errs, "codebase.languages must have at least one language")
+	}
+
+	if c.Indexing.ChunkMaxLines < 10 {
+		errs = append(errs, "indexing.chunk_max_lines must be >= 10")
+	}
+	if c.Indexing.ChunkOverlapLines >= c.Indexing.ChunkMaxLines {
+		errs = append(errs, "indexing.chunk_overlap_lines must be < chunk_max_lines")
+	}
+	if c.Indexing.BatchSize < 1 || c.Indexing.BatchSize > 128 {
+		errs = append(errs, "indexing.batch_size must be 1-128")
+	}
+	if c.Indexing.ConcurrentReqs < 1 || c.Indexing.ConcurrentReqs > 50 {
+		errs = append(errs, "indexing.concurrent_requests must be 1-50")
+	}
+
+	if c.Vector.URL == "" {
+		errs = append(errs, "vector_store.url is required")
+	}
+
+	if c.Metadata.Host == "" {
+		errs = append(errs, "metadata_store.host is required")
+	}
+	if c.Metadata.Database == "" {
+		errs = append(errs, "metadata_store.database is required")
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// ResolvedEnv holds the actual values from environment variables.
+type ResolvedEnv struct {
+	EmbeddingAPIKey string
+	PGUser          string
+	PGPassword      string
+	SummaryAPIKey   string
+}
+
+// ResolveEnv resolves environment variable references in the config.
+func (c *Config) ResolveEnv() (ResolvedEnv, error) {
+	var env ResolvedEnv
+	var errs []string
+
+	env.EmbeddingAPIKey = os.Getenv(c.Embedding.APIKeyEnv)
+	if env.EmbeddingAPIKey == "" {
+		errs = append(errs, fmt.Sprintf("env var %s not set (embeddings.api_key_env)", c.Embedding.APIKeyEnv))
+	}
+
+	if c.Metadata.UserEnv != "" {
+		env.PGUser = os.Getenv(c.Metadata.UserEnv)
+		if env.PGUser == "" {
+			errs = append(errs, fmt.Sprintf("env var %s not set (metadata_store.user_env)", c.Metadata.UserEnv))
+		}
+	}
+	if c.Metadata.PasswordEnv != "" {
+		env.PGPassword = os.Getenv(c.Metadata.PasswordEnv)
+		if env.PGPassword == "" {
+			errs = append(errs, fmt.Sprintf("env var %s not set (metadata_store.password_env)", c.Metadata.PasswordEnv))
+		}
+	}
+
+	if c.Summaries.Enabled && c.Summaries.APIKeyEnv != "" {
+		env.SummaryAPIKey = os.Getenv(c.Summaries.APIKeyEnv)
+	}
+
+	if len(errs) > 0 {
+		return env, fmt.Errorf("missing env vars: %s", strings.Join(errs, "; "))
+	}
+	return env, nil
+}
+
+// PostgresDSN builds a connection string from config + resolved env.
+func (c *Config) PostgresDSN(env ResolvedEnv) string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		env.PGUser, env.PGPassword,
+		c.Metadata.Host, c.Metadata.Port, c.Metadata.Database)
 }
