@@ -4,3 +4,5 @@ config.yaml
 .env
 *.test
 coverage.out
+.claude/
+.tldr/
