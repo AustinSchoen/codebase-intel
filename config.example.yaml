@@ -1,0 +1,45 @@
+codebase:
+  path: "/path/to/your/codebase"
+  name: "my-project"
+  languages: ["go", "py", "ts"]
+  exclude_patterns:
+    - "**/vendor/**"
+    - "**/node_modules/**"
+    - "**/.git/**"
+    - "**/dist/**"
+
+indexing:
+  chunk_max_lines: 200
+  chunk_overlap_lines: 20
+  context_prefix: true
+  batch_size: 128
+  concurrent_requests: 10
+  incremental: true
+
+embeddings:
+  provider: "voyage"
+  model: "voyage-code-3"
+  api_key_env: "VOYAGE_API_KEY"
+  dimensions: 1024
+
+vector_store:
+  provider: "qdrant"
+  url: "http://localhost:6333"
+  collection_prefix: "codebase"
+
+metadata_store:
+  provider: "postgres"
+  host: "localhost"
+  port: 5432
+  database: "codebase_intel"
+  user_env: "PGUSER"
+  password_env: "PGPASSWORD"
+  max_connections: 20
+
+summaries:
+  enabled: true
+  provider: "anthropic"
+  model: "claude-sonnet-4-5-20250929"
+  api_key_env: "ANTHROPIC_API_KEY"
+  top_classes: 1000
+  regenerate_on_change: true
