@@ -116,8 +116,8 @@ metadata_store:
 	if cfg.Indexing.ConcurrentFiles != 4 {
 		t.Errorf("default concurrent_files should be 4, got %d", cfg.Indexing.ConcurrentFiles)
 	}
-	if cfg.Metrics.Port != 9090 {
-		t.Errorf("default metrics port should be 9090, got %d", cfg.Metrics.Port)
+	if cfg.Metrics.Port != 9091 {
+		t.Errorf("default metrics port should be 9091, got %d", cfg.Metrics.Port)
 	}
 }
 

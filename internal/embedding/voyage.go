@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/AustinSchoen/codebase-intel/internal/metrics"
 )
 
 const (
@@ -169,6 +171,9 @@ func (c *VoyageClient) embedSingle(ctx context.Context, texts []string) ([][]flo
 	if err := json.Unmarshal(respBody, &voyageResp); err != nil {
 		return nil, fmt.Errorf("parsing response: %w", err)
 	}
+
+	metrics.EmbeddingRequestsTotal.Inc()
+	metrics.EmbeddingTokensTotal.Add(float64(voyageResp.Usage.TotalTokens))
 
 	embeddings := make([][]float32, len(texts))
 	for _, d := range voyageResp.Data {

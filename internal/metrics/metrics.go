@@ -37,12 +37,30 @@ var (
 		},
 		[]string{"type"},
 	)
+
+	// EmbeddingTokensTotal tracks total tokens sent to the Voyage embedding API.
+	EmbeddingTokensTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "codebase_intel_embedding_tokens_total",
+			Help: "Total tokens sent to Voyage embedding API",
+		},
+	)
+
+	// EmbeddingRequestsTotal tracks total Voyage API requests.
+	EmbeddingRequestsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "codebase_intel_embedding_requests_total",
+			Help: "Total requests to Voyage embedding API",
+		},
+	)
 )
 
 func init() {
 	prometheus.MustRegister(ToolCallsTotal)
 	prometheus.MustRegister(ToolLatency)
 	prometheus.MustRegister(IndexSize)
+	prometheus.MustRegister(EmbeddingTokensTotal)
+	prometheus.MustRegister(EmbeddingRequestsTotal)
 }
 
 // RecordToolCall records a tool call's count and latency.
