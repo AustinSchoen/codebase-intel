@@ -14,14 +14,16 @@ import (
 type Client struct {
 	url              string
 	collectionPrefix string
+	apiKey           string
 	client           *http.Client
 }
 
 // NewClient creates a new Qdrant REST API client.
-func NewClient(url, collectionPrefix string) *Client {
+func NewClient(url, collectionPrefix, apiKey string) *Client {
 	return &Client{
 		url:              url,
 		collectionPrefix: collectionPrefix,
+		apiKey:           apiKey,
 		client:           &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -247,6 +249,9 @@ func (c *Client) collectionExists(ctx context.Context, name string) (bool, error
 	if err != nil {
 		return false, err
 	}
+	if c.apiKey != "" {
+		req.Header.Set("api-key", c.apiKey)
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return false, err
@@ -275,6 +280,9 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, body inter
 		return fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("api-key", c.apiKey)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {

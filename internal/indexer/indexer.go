@@ -54,7 +54,7 @@ func New(cfg *config.Config) (*Indexer, error) {
 			cfg.Embedding.Dimensions,
 			cfg.Indexing.ConcurrentReqs,
 		),
-		qdrant: qdrant.NewClient(cfg.Vector.URL, cfg.Vector.CollectionPrefix),
+		qdrant: qdrant.NewClient(cfg.Vector.URL, cfg.Vector.CollectionPrefix, env.VectorAPIKey),
 		store:  store,
 		logger: log.New(os.Stderr, "[indexer] ", log.LstdFlags),
 	}, nil
