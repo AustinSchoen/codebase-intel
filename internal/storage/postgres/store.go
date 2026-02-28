@@ -103,10 +103,11 @@ type ChunkRecord struct {
 
 // FileState tracks content hash for incremental indexing.
 type FileState struct {
-	CodebaseID  string
-	Filepath    string
-	ContentHash string
-	ChunkCount  int
+	CodebaseID     string
+	Filepath       string
+	ContentHash    string
+	StructuralHash string
+	ChunkCount     int
 }
 
 // ModuleStat holds aggregated module statistics.
@@ -284,11 +285,11 @@ func (s *Store) UpsertChunks(ctx context.Context, chunks []ChunkRecord) error {
 // SetFileState records that a file has been indexed.
 func (s *Store) SetFileState(ctx context.Context, state FileState) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO file_state (codebase_id, filepath, content_hash, chunk_count)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO file_state (codebase_id, filepath, content_hash, structural_hash, chunk_count)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (codebase_id, filepath) DO UPDATE SET
-			content_hash = $3, chunk_count = $4, indexed_at = now()
-	`, state.CodebaseID, state.Filepath, state.ContentHash, state.ChunkCount)
+			content_hash = $3, structural_hash = $4, chunk_count = $5, indexed_at = now()
+	`, state.CodebaseID, state.Filepath, state.ContentHash, nilIfEmpty(state.StructuralHash), state.ChunkCount)
 	return err
 }
 
@@ -303,6 +304,46 @@ func (s *Store) GetFileHash(ctx context.Context, codebaseID, filepath string) (s
 		return "", nil
 	}
 	return hash, err
+}
+
+// GetAllFilePaths returns all tracked file paths for a codebase.
+func (s *Store) GetAllFilePaths(ctx context.Context, codebaseID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT filepath FROM file_state WHERE codebase_id = $1
+	`, codebaseID)
+	if err != nil {
+		return nil, fmt.Errorf("get all file paths: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			return nil, err
+		}
+		paths = append(paths, fp)
+	}
+	return paths, rows.Err()
+}
+
+// GetFileStructuralHash returns the stored structural hash for a file, or empty string if not set.
+func (s *Store) GetFileStructuralHash(ctx context.Context, codebaseID, filepath string) (string, error) {
+	var hash *string
+	err := s.pool.QueryRow(ctx, `
+		SELECT structural_hash FROM file_state
+		WHERE codebase_id = $1 AND filepath = $2
+	`, codebaseID, filepath).Scan(&hash)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if hash == nil {
+		return "", nil
+	}
+	return *hash, nil
 }
 
 // DeleteFileData removes all data for a specific file (chunks, symbols, file state).

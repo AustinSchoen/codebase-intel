@@ -16,6 +16,7 @@ type Config struct {
 	Vector    VectorConfig    `yaml:"vector_store"`
 	Metadata  MetadataConfig  `yaml:"metadata_store"`
 	Summaries SummaryConfig   `yaml:"summaries"`
+	Metrics   MetricsConfig   `yaml:"metrics"`
 }
 
 type CodebaseConfig struct {
@@ -31,6 +32,7 @@ type IndexingConfig struct {
 	ContextPrefix     bool `yaml:"context_prefix"`
 	BatchSize         int  `yaml:"batch_size"`
 	ConcurrentReqs    int  `yaml:"concurrent_requests"`
+	ConcurrentFiles   int  `yaml:"concurrent_files"`
 	Incremental       bool `yaml:"incremental"`
 }
 
@@ -65,6 +67,11 @@ type SummaryConfig struct {
 	APIKeyEnv       string `yaml:"api_key_env"`
 	TopClasses      int    `yaml:"top_classes"`
 	RegenerateOnChg bool   `yaml:"regenerate_on_change"`
+}
+
+type MetricsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	Port    int  `yaml:"port"`
 }
 
 // Load reads config from CODEBASE_INTEL_CONFIG env var or config.yaml.
@@ -106,6 +113,9 @@ func (c *Config) applyDefaults() {
 	if c.Indexing.ConcurrentReqs == 0 {
 		c.Indexing.ConcurrentReqs = 10
 	}
+	if c.Indexing.ConcurrentFiles == 0 {
+		c.Indexing.ConcurrentFiles = 4
+	}
 	if c.Embedding.Dimensions == 0 {
 		c.Embedding.Dimensions = 1024
 	}
@@ -129,6 +139,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Summaries.APIKeyEnv == "" {
 		c.Summaries.APIKeyEnv = "ANTHROPIC_API_KEY"
+	}
+	if c.Metrics.Port == 0 {
+		c.Metrics.Port = 9090
 	}
 	if c.Vector.CollectionPrefix == "" {
 		c.Vector.CollectionPrefix = "codebase"
