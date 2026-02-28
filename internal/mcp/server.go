@@ -15,6 +15,7 @@ import (
 	"github.com/AustinSchoen/codebase-intel/internal/embedding"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/postgres"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/qdrant"
+	"github.com/AustinSchoen/codebase-intel/internal/summary"
 )
 
 // JSON-RPC 2.0 types
@@ -41,11 +42,12 @@ type rpcError struct {
 
 // Server implements the MCP protocol over stdio.
 type Server struct {
-	cfg      *config.Config
-	store    *postgres.Store
-	qdrant   *qdrant.Client
-	embedder *embedding.VoyageClient
-	logger   *log.Logger
+	cfg       *config.Config
+	store     *postgres.Store
+	qdrant    *qdrant.Client
+	embedder  *embedding.VoyageClient
+	summarGen *summary.Generator
+	logger    *log.Logger
 }
 
 // NewServer creates a new MCP server.
@@ -120,6 +122,17 @@ func (s *Server) initBackends(ctx context.Context) error {
 		s.cfg.Embedding.Dimensions,
 		s.cfg.Indexing.ConcurrentReqs,
 	)
+
+	// Summary generator
+	if s.cfg.Summaries.Enabled && env.SummaryAPIKey != "" && s.store != nil {
+		s.summarGen = summary.NewGenerator(
+			env.SummaryAPIKey,
+			s.cfg.Summaries.Model,
+			s.store,
+			s.cfg.Codebase.Name,
+			s.logger,
+		)
+	}
 
 	return nil
 }
@@ -237,6 +250,28 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 				"required": []string{"filepath"},
 			},
 		},
+		{
+			"name":        "get_module_summary",
+			"description": "Get a high-level architectural summary of a module. Returns purpose, key classes, dependencies, and statistics. Falls back to on-demand generation if no cached summary exists.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"module": map[string]interface{}{"type": "string", "description": "Module name (e.g., 'Chaos', 'GameplayAbilities', 'parser')"},
+				},
+				"required": []string{"module"},
+			},
+		},
+		{
+			"name":        "explain_subsystem",
+			"description": "Get a detailed architectural explanation of how a subsystem or feature works, including data flow, key extension points, and common patterns. Uses semantic search to find relevant code, then generates an explanation.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"topic": map[string]interface{}{"type": "string", "description": "The subsystem or topic to explain (e.g., 'character movement', 'replication', 'indexing pipeline')"},
+				},
+				"required": []string{"topic"},
+			},
+		},
 	}
 
 	return &jsonrpcResponse{
@@ -275,6 +310,10 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 		result, err = s.toolGetClassHierarchy(ctx, params.Arguments)
 	case "get_file_context":
 		result, err = s.toolGetFileContext(ctx, params.Arguments)
+	case "get_module_summary":
+		result, err = s.toolGetModuleSummary(ctx, params.Arguments)
+	case "explain_subsystem":
+		result, err = s.toolExplainSubsystem(ctx, params.Arguments)
 	default:
 		return &jsonrpcResponse{
 			JSONRPC: "2.0",
@@ -677,6 +716,149 @@ func (s *Server) toolGetFileContext(ctx context.Context, args json.RawMessage) (
 	}
 
 	return result, nil
+}
+
+func (s *Server) toolGetModuleSummary(ctx context.Context, args json.RawMessage) (interface{}, error) {
+	var params struct {
+		Module string `json:"module"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("parsing args: %w", err)
+	}
+
+	if s.store == nil {
+		return nil, fmt.Errorf("postgres not available")
+	}
+
+	// Try to get cached summary first
+	sum, err := s.store.GetSummary(ctx, s.cfg.Codebase.Name, params.Module, "module")
+	if err != nil {
+		return nil, fmt.Errorf("get summary: %w", err)
+	}
+
+	// If no cached summary, try on-demand generation
+	if sum == nil && s.summarGen != nil {
+		sum, err = s.summarGen.GenerateModuleSummary(ctx, params.Module)
+		if err != nil {
+			s.logger.Printf("warning: on-demand summary generation failed: %v", err)
+			// Fall through to return module stats without summary
+		}
+	}
+
+	// Get module stats
+	modules, err := s.store.ListModules(ctx, s.cfg.Codebase.Name, params.Module)
+	if err != nil {
+		return nil, fmt.Errorf("list modules: %w", err)
+	}
+
+	// Build result
+	result := map[string]interface{}{
+		"module": params.Module,
+	}
+
+	if sum != nil {
+		result["summary"] = sum.SummaryText
+
+		var keyClasses []string
+		json.Unmarshal([]byte(sum.KeyClasses), &keyClasses)
+		result["key_classes"] = keyClasses
+
+		var deps []string
+		json.Unmarshal([]byte(sum.Dependencies), &deps)
+		result["dependencies"] = deps
+	}
+
+	// Aggregate stats across matching modules
+	var totalFiles, totalLOC int
+	var submodules []string
+	for _, m := range modules {
+		totalFiles += m.FileCount
+		totalLOC += m.EstimatedLOC
+		if m.Module != params.Module {
+			submodules = append(submodules, m.Module)
+		}
+	}
+	result["file_count"] = totalFiles
+	result["estimated_loc"] = totalLOC
+	if len(submodules) > 0 {
+		result["submodules"] = submodules
+	}
+
+	if sum == nil {
+		result["summary"] = fmt.Sprintf("No summary available for module '%s'. Summary generation may be disabled or the module may not exist.", params.Module)
+	}
+
+	return result, nil
+}
+
+func (s *Server) toolExplainSubsystem(ctx context.Context, args json.RawMessage) (interface{}, error) {
+	var params struct {
+		Topic string `json:"topic"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("parsing args: %w", err)
+	}
+
+	if s.summarGen == nil {
+		return nil, fmt.Errorf("summary generation not available (check summaries.enabled and API key)")
+	}
+
+	// Check for cached subsystem summary
+	cached, err := s.store.GetSummary(ctx, s.cfg.Codebase.Name, params.Topic, "subsystem")
+	if err != nil {
+		return nil, fmt.Errorf("check cached summary: %w", err)
+	}
+
+	if cached != nil {
+		var keyClasses, relatedModules []string
+		json.Unmarshal([]byte(cached.KeyClasses), &keyClasses)
+		json.Unmarshal([]byte(cached.Dependencies), &relatedModules)
+		return map[string]interface{}{
+			"topic":           params.Topic,
+			"explanation":     cached.SummaryText,
+			"key_classes":     keyClasses,
+			"related_modules": relatedModules,
+		}, nil
+	}
+
+	// Use semantic search to find relevant code chunks
+	var relevantChunks []string
+	if s.embedder != nil && s.qdrant != nil {
+		vec, err := s.embedder.Embed(ctx, params.Topic)
+		if err == nil {
+			results, err := s.qdrant.HybridSearch(ctx, s.cfg.Codebase.Name, qdrant.SearchRequest{
+				DenseVector: vec,
+				Limit:       10,
+			})
+			if err == nil {
+				for _, r := range results {
+					if content, ok := r.Payload["content"].(string); ok {
+						prefix := ""
+						if fp, ok := r.Payload["filepath"].(string); ok {
+							prefix = "// File: " + fp + "\n"
+						}
+						if qn, ok := r.Payload["qualified_name"].(string); ok {
+							prefix += "// Symbol: " + qn + "\n"
+						}
+						relevantChunks = append(relevantChunks, prefix+content)
+					}
+				}
+			}
+		}
+	}
+
+	// Generate explanation
+	explanation, keyClasses, relatedModules, err := s.summarGen.GenerateSubsystemExplanation(ctx, params.Topic, relevantChunks)
+	if err != nil {
+		return nil, fmt.Errorf("generate explanation: %w", err)
+	}
+
+	return map[string]interface{}{
+		"topic":           params.Topic,
+		"explanation":     explanation,
+		"key_classes":     keyClasses,
+		"related_modules": relatedModules,
+	}, nil
 }
 
 func (s *Server) writeResponse(resp *jsonrpcResponse) {
