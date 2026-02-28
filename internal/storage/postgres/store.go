@@ -913,3 +913,20 @@ func nilIfZero(n int) interface{} {
 	}
 	return n
 }
+
+// GetIndexCounts returns counts of symbols, chunks (file_state entries), and relationships for a codebase.
+func (s *Store) GetIndexCounts(ctx context.Context, codebaseName string) (symbols, files, relationships int64, err error) {
+	row := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM symbols WHERE codebase_id = $1`, codebaseName)
+	if err = row.Scan(&symbols); err != nil {
+		return
+	}
+	row = s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM file_state WHERE codebase_id = $1`, codebaseName)
+	if err = row.Scan(&files); err != nil {
+		return
+	}
+	row = s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM relationships WHERE codebase_id = $1`, codebaseName)
+	if err = row.Scan(&relationships); err != nil {
+		return
+	}
+	return
+}

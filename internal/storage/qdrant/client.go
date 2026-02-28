@@ -307,3 +307,35 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, body inter
 
 	return nil
 }
+
+// CountPoints returns the total number of points in a collection.
+func (c *Client) CountPoints(ctx context.Context, codebaseName string) (int64, error) {
+	collection := c.collectionPrefix + "_" + codebaseName
+	url := fmt.Sprintf("%s/collections/%s/points/count", c.url, collection)
+
+	body := []byte(`{"exact": true}`)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("api-key", c.apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			Count int64 `json:"count"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+	return result.Result.Count, nil
+}

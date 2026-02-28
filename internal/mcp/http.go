@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/AustinSchoen/codebase-intel/internal/metrics"
 )
 
 // session represents a single MCP client session over HTTP.
@@ -40,6 +42,16 @@ func (s *Server) RunHTTP(addr string) error {
 	if s.store != nil {
 		defer s.store.Close()
 	}
+
+	// Populate index size metrics on startup and periodically
+	s.updateIndexMetrics(ctx)
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.updateIndexMetrics(ctx)
+		}
+	}()
 
 	t := &HTTPTransport{server: s}
 
@@ -320,6 +332,29 @@ func (t *HTTPTransport) sendNotification(sessionID string, method string, params
 		case ch <- []byte(escaped):
 		default:
 			// Drop if channel is full (slow client)
+		}
+	}
+}
+
+// updateIndexMetrics queries backends and sets Prometheus index size gauges.
+func (s *Server) updateIndexMetrics(ctx context.Context) {
+	if s.store != nil {
+		symbols, files, relationships, err := s.store.GetIndexCounts(ctx, s.cfg.Codebase.Name)
+		if err != nil {
+			s.logger.Printf("warning: failed to get index counts: %v", err)
+		} else {
+			metrics.SetIndexSize("symbols", float64(symbols))
+			metrics.SetIndexSize("files", float64(files))
+			metrics.SetIndexSize("relationships", float64(relationships))
+		}
+	}
+
+	if s.qdrant != nil {
+		count, err := s.qdrant.CountPoints(ctx, s.cfg.Codebase.Name)
+		if err != nil {
+			s.logger.Printf("warning: failed to get qdrant count: %v", err)
+		} else {
+			metrics.SetIndexSize("chunks", float64(count))
 		}
 	}
 }
