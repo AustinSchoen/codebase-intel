@@ -10,8 +10,10 @@ import (
 	"github.com/smacker/go-tree-sitter/cpp"
 	"github.com/smacker/go-tree-sitter/golang"
 	"github.com/smacker/go-tree-sitter/javascript"
+	"github.com/smacker/go-tree-sitter/kotlin"
 	"github.com/smacker/go-tree-sitter/python"
 	"github.com/smacker/go-tree-sitter/rust"
+	"github.com/smacker/go-tree-sitter/swift"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 )
 
@@ -50,7 +52,7 @@ type Parser struct {
 	languages map[string]*sitter.Language
 }
 
-// New creates a parser with grammars for Go, Python, TypeScript, JavaScript, Rust, C, and C++.
+// New creates a parser with grammars for Go, Python, TypeScript, JavaScript, Rust, C, C++, Kotlin, and Swift.
 func New() *Parser {
 	return &Parser{
 		languages: map[string]*sitter.Language{
@@ -70,6 +72,10 @@ func New() *Parser {
 			"cc":         cpp.GetLanguage(),
 			"h":          c.GetLanguage(),
 			"hpp":        cpp.GetLanguage(),
+			"kotlin":     kotlin.GetLanguage(),
+			"kt":         kotlin.GetLanguage(),
+			"kts":        kotlin.GetLanguage(),
+			"swift":      swift.GetLanguage(),
 		},
 	}
 }
@@ -118,6 +124,10 @@ func (p *Parser) ParseFile(ctx context.Context, filepath string, source []byte, 
 		p.extractC(root, source, result)
 	case "cpp", "cc", "hpp":
 		p.extractCpp(root, source, result)
+	case "kotlin", "kt", "kts":
+		p.extractKotlin(root, source, result)
+	case "swift":
+		p.extractSwift(root, source, result)
 	}
 
 	return result, nil
