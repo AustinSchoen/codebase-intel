@@ -308,6 +308,40 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, body inter
 	return nil
 }
 
+// ListCollections returns all collection names from Qdrant.
+func (c *Client) ListCollections(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/collections", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("api-key", c.apiKey)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			Collections []struct {
+				Name string `json:"name"`
+			} `json:"collections"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var names []string
+	for _, col := range result.Result.Collections {
+		names = append(names, col.Name)
+	}
+	return names, nil
+}
+
 // CountPoints returns the total number of points in a collection.
 func (c *Client) CountPoints(ctx context.Context, codebaseName string) (int64, error) {
 	collection := c.collectionPrefix + "_" + codebaseName
