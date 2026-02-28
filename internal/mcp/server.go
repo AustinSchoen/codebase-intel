@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/AustinSchoen/codebase-intel/internal/config"
 	"github.com/AustinSchoen/codebase-intel/internal/embedding"
@@ -196,6 +198,45 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 				},
 			},
 		},
+		{
+			"name":        "get_references",
+			"description": "Find all symbols that call or reference a given symbol. Returns callers, type users, or inheritance references.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"symbol":   map[string]interface{}{"type": "string", "description": "Symbol name to find references for (short or qualified)"},
+					"ref_kind": map[string]interface{}{"type": "string", "enum": []string{"calls", "inherits", "references", "any"}, "default": "any", "description": "Filter by relationship kind"},
+					"limit":    map[string]interface{}{"type": "integer", "default": 20},
+				},
+				"required": []string{"symbol"},
+			},
+		},
+		{
+			"name":        "get_class_hierarchy",
+			"description": "Traverse inheritance hierarchy for a class or struct. Shows parent types and child types.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"class_name": map[string]interface{}{"type": "string", "description": "Class or struct name to start from"},
+					"direction":  map[string]interface{}{"type": "string", "enum": []string{"parents", "children", "both"}, "default": "both"},
+					"depth":      map[string]interface{}{"type": "integer", "default": 5, "description": "Maximum traversal depth"},
+				},
+				"required": []string{"class_name"},
+			},
+		},
+		{
+			"name":        "get_file_context",
+			"description": "Get a file's content with architectural context: defined symbols, what depends on it, and module info.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"filepath":   map[string]interface{}{"type": "string", "description": "Relative filepath within the codebase"},
+					"line_start": map[string]interface{}{"type": "integer", "description": "Start line (optional, returns range instead of full file)"},
+					"line_end":   map[string]interface{}{"type": "integer", "description": "End line (optional)"},
+				},
+				"required": []string{"filepath"},
+			},
+		},
 	}
 
 	return &jsonrpcResponse{
@@ -228,6 +269,12 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 		result, err = s.toolGetSymbol(ctx, params.Arguments)
 	case "list_modules":
 		result, err = s.toolListModules(ctx, params.Arguments)
+	case "get_references":
+		result, err = s.toolGetReferences(ctx, params.Arguments)
+	case "get_class_hierarchy":
+		result, err = s.toolGetClassHierarchy(ctx, params.Arguments)
+	case "get_file_context":
+		result, err = s.toolGetFileContext(ctx, params.Arguments)
 	default:
 		return &jsonrpcResponse{
 			JSONRPC: "2.0",
@@ -431,6 +478,205 @@ func (s *Server) toolListModules(ctx context.Context, args json.RawMessage) (int
 	}
 
 	return map[string]interface{}{"modules": out}, nil
+}
+
+func (s *Server) toolGetReferences(ctx context.Context, args json.RawMessage) (interface{}, error) {
+	var params struct {
+		Symbol  string `json:"symbol"`
+		RefKind string `json:"ref_kind"`
+		Limit   int    `json:"limit"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("parsing args: %w", err)
+	}
+	if params.RefKind == "" || params.RefKind == "any" {
+		params.RefKind = ""
+	}
+
+	if s.store == nil {
+		return nil, fmt.Errorf("postgres not available")
+	}
+
+	refs, err := s.store.GetReferences(ctx, s.cfg.Codebase.Name, params.Symbol, params.RefKind, params.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("get references: %w", err)
+	}
+
+	type refResult struct {
+		Name      string `json:"name"`
+		Qualified string `json:"qualified"`
+		Kind      string `json:"kind"`
+		Filepath  string `json:"filepath"`
+		LineStart int    `json:"line_start"`
+		LineEnd   int    `json:"line_end"`
+		Module    string `json:"module,omitempty"`
+		RefKind   string `json:"ref_kind"`
+		RefLine   int    `json:"ref_line"`
+	}
+
+	var out []refResult
+	for _, r := range refs {
+		out = append(out, refResult{
+			Name:      r.SymbolName,
+			Qualified: r.SymbolQualified,
+			Kind:      r.SymbolKind,
+			Filepath:  r.Filepath,
+			LineStart: r.LineStart,
+			LineEnd:   r.LineEnd,
+			Module:    r.Module,
+			RefKind:   r.RefKind,
+			RefLine:   r.RefLine,
+		})
+	}
+
+	return map[string]interface{}{"references": out, "symbol": params.Symbol}, nil
+}
+
+func (s *Server) toolGetClassHierarchy(ctx context.Context, args json.RawMessage) (interface{}, error) {
+	var params struct {
+		ClassName string `json:"class_name"`
+		Direction string `json:"direction"`
+		Depth     int    `json:"depth"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("parsing args: %w", err)
+	}
+	if params.Direction == "" {
+		params.Direction = "both"
+	}
+	if params.Depth <= 0 {
+		params.Depth = 5
+	}
+
+	if s.store == nil {
+		return nil, fmt.Errorf("postgres not available")
+	}
+
+	nodes, err := s.store.GetClassHierarchy(ctx, s.cfg.Codebase.Name, params.ClassName, params.Direction, params.Depth)
+	if err != nil {
+		return nil, fmt.Errorf("get class hierarchy: %w", err)
+	}
+
+	type hierarchyResult struct {
+		Qualified string `json:"qualified"`
+		Kind      string `json:"kind"`
+		Depth     int    `json:"depth"`
+		Direction string `json:"direction"`
+	}
+
+	var out []hierarchyResult
+	for _, n := range nodes {
+		out = append(out, hierarchyResult{
+			Qualified: n.Qualified,
+			Kind:      n.Kind,
+			Depth:     n.Depth,
+			Direction: n.Direction,
+		})
+	}
+
+	return map[string]interface{}{"class_name": params.ClassName, "hierarchy": out}, nil
+}
+
+func (s *Server) toolGetFileContext(ctx context.Context, args json.RawMessage) (interface{}, error) {
+	var params struct {
+		Filepath  string `json:"filepath"`
+		LineStart int    `json:"line_start"`
+		LineEnd   int    `json:"line_end"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("parsing args: %w", err)
+	}
+
+	if s.store == nil {
+		return nil, fmt.Errorf("postgres not available")
+	}
+
+	// Get symbols defined in this file
+	symbols, err := s.store.GetFileSymbols(ctx, s.cfg.Codebase.Name, params.Filepath)
+	if err != nil {
+		return nil, fmt.Errorf("get file symbols: %w", err)
+	}
+
+	type symInfo struct {
+		Name      string `json:"name"`
+		Qualified string `json:"qualified"`
+		Kind      string `json:"kind"`
+		LineStart int    `json:"line_start"`
+		LineEnd   int    `json:"line_end"`
+		Signature string `json:"signature,omitempty"`
+	}
+	var symOut []symInfo
+	module := ""
+	for _, sym := range symbols {
+		symOut = append(symOut, symInfo{
+			Name:      sym.Name,
+			Qualified: sym.Qualified,
+			Kind:      sym.Kind,
+			LineStart: sym.LineStart,
+			LineEnd:   sym.LineEnd,
+			Signature: sym.Signature,
+		})
+		if module == "" && sym.Module != "" {
+			module = sym.Module
+		}
+	}
+
+	// Get dependents (other files that reference this file's symbols)
+	dependents, err := s.store.GetFileDependents(ctx, s.cfg.Codebase.Name, params.Filepath, 20)
+	if err != nil {
+		return nil, fmt.Errorf("get file dependents: %w", err)
+	}
+
+	type depInfo struct {
+		Name      string `json:"name"`
+		Qualified string `json:"qualified"`
+		Kind      string `json:"kind"`
+		Filepath  string `json:"filepath"`
+		RefKind   string `json:"ref_kind"`
+	}
+	var depOut []depInfo
+	for _, d := range dependents {
+		depOut = append(depOut, depInfo{
+			Name:      d.SymbolName,
+			Qualified: d.SymbolQualified,
+			Kind:      d.SymbolKind,
+			Filepath:  d.Filepath,
+			RefKind:   d.RefKind,
+		})
+	}
+
+	result := map[string]interface{}{
+		"filepath":   params.Filepath,
+		"module":     module,
+		"symbols":    symOut,
+		"dependents": depOut,
+	}
+
+	// Read file content if requested (line range or full)
+	if s.cfg.Codebase.Path != "" {
+		fullPath := filepath.Join(s.cfg.Codebase.Path, params.Filepath)
+		data, err := os.ReadFile(fullPath)
+		if err == nil {
+			content := string(data)
+			if params.LineStart > 0 || params.LineEnd > 0 {
+				lines := strings.Split(content, "\n")
+				start := params.LineStart - 1
+				if start < 0 {
+					start = 0
+				}
+				end := params.LineEnd
+				if end <= 0 || end > len(lines) {
+					end = len(lines)
+				}
+				if start < len(lines) {
+					content = strings.Join(lines[start:end], "\n")
+				}
+			}
+			result["content"] = content
+		}
+	}
+
+	return result, nil
 }
 
 func (s *Server) writeResponse(resp *jsonrpcResponse) {

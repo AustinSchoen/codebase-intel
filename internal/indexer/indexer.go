@@ -19,6 +19,15 @@ import (
 	"github.com/AustinSchoen/codebase-intel/internal/storage/qdrant"
 )
 
+// rawRelationship holds an unresolved relationship from parsing.
+type rawRelationship struct {
+	SourceQualified string
+	TargetName      string
+	Kind            string
+	Line            int
+	Filepath        string
+}
+
 // Indexer walks a codebase, parses, chunks, embeds, and stores.
 type Indexer struct {
 	cfg      *config.Config
@@ -149,16 +158,18 @@ func (idx *Indexer) fullIndex(ctx context.Context) error {
 
 	idx.logger.Printf("found %d files to index", len(files))
 
+	var allRawRels []rawRelationship
 	indexed := 0
 	skipped := 0
 	for _, file := range files {
-		changed, err := idx.indexFile(ctx, file)
+		changed, fileRels, err := idx.indexFile(ctx, file)
 		if err != nil {
 			idx.logger.Printf("error indexing %s: %v", file, err)
 			continue
 		}
 		if changed {
 			indexed++
+			allRawRels = append(allRawRels, fileRels...)
 		} else {
 			skipped++
 		}
@@ -169,6 +180,13 @@ func (idx *Indexer) fullIndex(ctx context.Context) error {
 
 	idx.logger.Printf("indexing complete: %d indexed, %d unchanged", indexed, skipped)
 
+	// Resolve and store relationships
+	if len(allRawRels) > 0 {
+		if err := idx.resolveAndStoreRelationships(ctx, allRawRels); err != nil {
+			idx.logger.Printf("warning: storing relationships: %v", err)
+		}
+	}
+
 	// Refresh materialized views
 	if err := idx.store.RefreshMaterializedViews(ctx); err != nil {
 		idx.logger.Printf("warning: refresh materialized views: %v", err)
@@ -177,8 +195,9 @@ func (idx *Indexer) fullIndex(ctx context.Context) error {
 	return nil
 }
 
-// indexFile processes a single file through the pipeline. Returns true if the file was indexed (changed).
-func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, error) {
+// indexFile processes a single file through the pipeline.
+// Returns true if the file was indexed (changed), plus any raw relationships extracted.
+func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, []rawRelationship, error) {
 	relPath, err := filepath.Rel(idx.cfg.Codebase.Path, path)
 	if err != nil {
 		relPath = path
@@ -187,7 +206,7 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, error) {
 	// Read file
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return false, fmt.Errorf("reading file: %w", err)
+		return false, nil, fmt.Errorf("reading file: %w", err)
 	}
 
 	// Check content hash for incremental indexing
@@ -195,33 +214,33 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, error) {
 	if idx.cfg.Indexing.Incremental {
 		existingHash, err := idx.store.GetFileHash(ctx, idx.cfg.Codebase.Name, relPath)
 		if err != nil {
-			return false, fmt.Errorf("getting file hash: %w", err)
+			return false, nil, fmt.Errorf("getting file hash: %w", err)
 		}
 		if existingHash == hash {
-			return false, nil // unchanged
+			return false, nil, nil // unchanged
 		}
 	}
 
 	lang := idx.detectLanguage(path)
 	if lang == "" {
-		return false, nil
+		return false, nil, nil
 	}
 
 	// Parse
 	result, err := idx.parser.ParseFile(ctx, relPath, content, lang)
 	if err != nil {
-		return false, fmt.Errorf("parsing: %w", err)
+		return false, nil, fmt.Errorf("parsing: %w", err)
 	}
 
 	// Chunk
 	chunks := idx.chunker.ChunkFile(result)
 	if len(chunks) == 0 {
-		return false, nil
+		return false, nil, nil
 	}
 
 	// Delete old data for this file
 	if err := idx.store.DeleteFileData(ctx, idx.cfg.Codebase.Name, relPath); err != nil {
-		return false, fmt.Errorf("deleting old data: %w", err)
+		return false, nil, fmt.Errorf("deleting old data: %w", err)
 	}
 	if err := idx.qdrant.DeleteByFilter(ctx, idx.cfg.Codebase.Name, relPath); err != nil {
 		idx.logger.Printf("warning: deleting old vectors for %s: %v", relPath, err)
@@ -244,7 +263,7 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, error) {
 	}
 
 	if err := idx.store.UpsertSymbols(ctx, symbols); err != nil {
-		return false, fmt.Errorf("upserting symbols: %w", err)
+		return false, nil, fmt.Errorf("upserting symbols: %w", err)
 	}
 
 	// Embed chunks
@@ -259,7 +278,7 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, error) {
 
 	vectors, err := idx.embedder.EmbedBatch(ctx, texts)
 	if err != nil {
-		return false, fmt.Errorf("embedding: %w", err)
+		return false, nil, fmt.Errorf("embedding: %w", err)
 	}
 
 	// Build Qdrant points
@@ -299,12 +318,12 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, error) {
 
 	// Upsert to Qdrant
 	if err := idx.qdrant.Upsert(ctx, idx.cfg.Codebase.Name, points); err != nil {
-		return false, fmt.Errorf("upserting vectors: %w", err)
+		return false, nil, fmt.Errorf("upserting vectors: %w", err)
 	}
 
 	// Upsert chunk records to Postgres
 	if err := idx.store.UpsertChunks(ctx, chunkRecords); err != nil {
-		return false, fmt.Errorf("upserting chunk records: %w", err)
+		return false, nil, fmt.Errorf("upserting chunk records: %w", err)
 	}
 
 	// Update file state
@@ -314,10 +333,22 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, error) {
 		ContentHash: hash,
 		ChunkCount:  len(chunks),
 	}); err != nil {
-		return false, fmt.Errorf("setting file state: %w", err)
+		return false, nil, fmt.Errorf("setting file state: %w", err)
 	}
 
-	return true, nil
+	// Collect raw relationships from parse result
+	var rels []rawRelationship
+	for _, r := range result.Relationships {
+		rels = append(rels, rawRelationship{
+			SourceQualified: r.SourceQualified,
+			TargetName:      r.TargetName,
+			Kind:            r.Kind,
+			Line:            r.Line,
+			Filepath:        relPath,
+		})
+	}
+
+	return true, rels, nil
 }
 
 func (idx *Indexer) watch(ctx context.Context) error {
@@ -359,7 +390,7 @@ func (idx *Indexer) watch(ctx context.Context) error {
 				lang := idx.detectLanguage(event.Name)
 				if lang != "" {
 					idx.logger.Printf("file changed: %s", event.Name)
-					if _, err := idx.indexFile(ctx, event.Name); err != nil {
+					if _, _, err := idx.indexFile(ctx, event.Name); err != nil {
 						idx.logger.Printf("error re-indexing %s: %v", event.Name, err)
 					}
 				}
@@ -382,6 +413,96 @@ func (idx *Indexer) watch(ctx context.Context) error {
 			idx.logger.Printf("watcher error: %v", err)
 		}
 	}
+}
+
+// resolveAndStoreRelationships resolves raw relationship names to symbol IDs and stores them.
+func (idx *Indexer) resolveAndStoreRelationships(ctx context.Context, rawRels []rawRelationship) error {
+	refs, err := idx.store.GetAllSymbolRefs(ctx, idx.cfg.Codebase.Name)
+	if err != nil {
+		return fmt.Errorf("getting symbol refs: %w", err)
+	}
+
+	// Build lookup maps
+	qualifiedToID := make(map[string]string)
+	nameToIDs := make(map[string][]string)
+	for _, ref := range refs {
+		qualifiedToID[ref.Qualified] = ref.ID
+		nameToIDs[ref.Name] = append(nameToIDs[ref.Name], ref.ID)
+	}
+
+	var resolved []postgres.Relationship
+	seen := make(map[string]bool) // dedup key: source_id:target_id:kind
+
+	for _, raw := range rawRels {
+		sourceID, ok := qualifiedToID[raw.SourceQualified]
+		if !ok {
+			continue
+		}
+
+		targetID := resolveTarget(raw.TargetName, qualifiedToID, nameToIDs)
+		if targetID == "" || targetID == sourceID {
+			continue
+		}
+
+		key := sourceID + ":" + targetID + ":" + raw.Kind
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		resolved = append(resolved, postgres.Relationship{
+			CodebaseID: idx.cfg.Codebase.Name,
+			SourceID:   sourceID,
+			TargetID:   targetID,
+			Kind:       raw.Kind,
+			Filepath:   raw.Filepath,
+			Line:       raw.Line,
+		})
+	}
+
+	if len(resolved) == 0 {
+		return nil
+	}
+
+	idx.logger.Printf("storing %d resolved relationships (from %d raw)", len(resolved), len(rawRels))
+	return idx.store.UpsertRelationships(ctx, resolved)
+}
+
+// resolveTarget tries to match a target name to a symbol ID.
+func resolveTarget(name string, qualifiedToID map[string]string, nameToIDs map[string][]string) string {
+	// 1. Exact qualified match
+	if id, ok := qualifiedToID[name]; ok {
+		return id
+	}
+
+	// 2. Extract last component for suffix matching
+	lastDot := strings.LastIndex(name, ".")
+	shortName := name
+	if lastDot >= 0 {
+		shortName = name[lastDot+1:]
+	}
+
+	// 3. Try short name as qualified name
+	if id, ok := qualifiedToID[shortName]; ok {
+		return id
+	}
+
+	// 4. Try suffix match: "Type.Method" might be in qualifiedToID
+	// For selector calls like "variable.Method", try to match "*.Method"
+	if lastDot >= 0 {
+		for qualified, id := range qualifiedToID {
+			if strings.HasSuffix(qualified, "."+shortName) {
+				return id // first match wins
+			}
+		}
+	}
+
+	// 5. Unambiguous short name match
+	if ids, ok := nameToIDs[shortName]; ok && len(ids) == 1 {
+		return ids[0]
+	}
+
+	return ""
 }
 
 // detectLanguage returns the language for a file based on extension.

@@ -25,11 +25,20 @@ type Symbol struct {
 	Language    string
 }
 
-// ParseResult holds all symbols extracted from a single file.
+// Relationship represents a detected reference between symbols.
+type Relationship struct {
+	SourceQualified string // qualified name of the referencing symbol
+	TargetName      string // name of the referenced symbol (may be short or qualified)
+	Kind            string // calls, inherits, references
+	Line            int    // line where the reference occurs
+}
+
+// ParseResult holds all symbols and relationships extracted from a single file.
 type ParseResult struct {
-	Filepath string
-	Language string
-	Symbols  []Symbol
+	Filepath      string
+	Language      string
+	Symbols       []Symbol
+	Relationships []Relationship
 }
 
 // Parser uses tree-sitter to parse source files and extract symbols.
@@ -91,7 +100,7 @@ func (p *Parser) ParseFile(ctx context.Context, filepath string, source []byte, 
 	return result, nil
 }
 
-// extractGo extracts symbols from a Go AST.
+// extractGo extracts symbols and relationships from a Go AST.
 func (p *Parser) extractGo(root *sitter.Node, source []byte, result *ParseResult) {
 	for i := 0; i < int(root.ChildCount()); i++ {
 		child := root.Child(i)
@@ -114,6 +123,9 @@ func (p *Parser) extractGo(root *sitter.Node, source []byte, result *ParseResult
 			}
 		}
 	}
+
+	// Phase 2: extract relationships (calls, embedding, type references)
+	p.extractGoRelationships(root, source, result)
 }
 
 func (p *Parser) goFunction(node *sitter.Node, source []byte) Symbol {
