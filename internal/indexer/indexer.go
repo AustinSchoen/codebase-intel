@@ -534,18 +534,21 @@ func resolveTarget(name string, qualifiedToID map[string]string, nameToIDs map[s
 func (idx *Indexer) detectLanguage(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	langMap := map[string]string{
-		".go":   "go",
-		".py":   "python",
-		".ts":   "typescript",
-		".tsx":  "tsx",
-		".js":   "javascript",
-		".jsx":  "jsx",
-		".rs":   "rust",
-		".c":    "c",
-		".h":    "h",
-		".cpp":  "cpp",
-		".cc":   "cc",
-		".hpp":  "hpp",
+		".go":    "go",
+		".py":    "python",
+		".ts":    "typescript",
+		".tsx":   "tsx",
+		".js":    "javascript",
+		".jsx":   "jsx",
+		".rs":    "rust",
+		".c":     "c",
+		".h":     "h",
+		".cpp":   "cpp",
+		".cc":    "cc",
+		".hpp":   "hpp",
+		".kt":    "kotlin",
+		".kts":   "kts",
+		".swift": "swift",
 	}
 
 	lang, ok := langMap[ext]
@@ -577,6 +580,8 @@ func langFamily(lang string) string {
 		return "c"
 	case "rs":
 		return "rust"
+	case "kt", "kts":
+		return "kotlin"
 	default:
 		return lang
 	}
