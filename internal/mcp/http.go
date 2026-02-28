@@ -27,9 +27,10 @@ type session struct {
 
 // HTTPTransport serves the MCP protocol over Streamable HTTP (2025-03-26 spec).
 type HTTPTransport struct {
-	server   *Server
-	apiKey   string // optional bearer token
-	sessions sync.Map
+	server     *Server
+	apiKey     string // optional bearer token
+	sessions   sync.Map
+	indexerMgr *IndexerManager
 }
 
 // RunHTTP starts the MCP server with HTTP/SSE transport.
@@ -53,7 +54,11 @@ func (s *Server) RunHTTP(addr string) error {
 		}
 	}()
 
-	t := &HTTPTransport{server: s}
+	indexerMgr := NewIndexerManager(s.logger)
+	t := &HTTPTransport{server: s, indexerMgr: indexerMgr}
+
+	// Make indexer manager available to MCP tools
+	s.indexerMgr = indexerMgr
 
 	// Resolve optional API key for bearer auth
 	if s.cfg.Server.APIKeyEnv != "" {
@@ -66,6 +71,9 @@ func (s *Server) RunHTTP(addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", t.handleHealth)
 	mux.HandleFunc("/mcp", t.handleMCP)
+	mux.HandleFunc("/mcp/indexer", t.handleIndexer)
+	mux.HandleFunc("/mcp/indexer/status", t.handleIndexerStatus)
+	mux.HandleFunc("/mcp/indexer/nodes", t.handleIndexerNodes)
 
 	s.logger.Printf("MCP HTTP server listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
@@ -334,6 +342,157 @@ func (t *HTTPTransport) sendNotification(sessionID string, method string, params
 			// Drop if channel is full (slow client)
 		}
 	}
+}
+
+// handleIndexer is the SSE endpoint for indexer daemons to connect and receive commands.
+func (t *HTTPTransport) handleIndexer(w http.ResponseWriter, r *http.Request) {
+	if !t.checkAuth(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeHTTPError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	// Parse registration from query parameters
+	nodeID := r.URL.Query().Get("node_id")
+	codebase := r.URL.Query().Get("codebase")
+	if nodeID == "" || codebase == "" {
+		writeHTTPError(w, http.StatusBadRequest, "node_id and codebase query parameters required")
+		return
+	}
+
+	codebases := []string{codebase}
+
+	// Create SSE channel for this indexer
+	sseChan := make(chan []byte, 64)
+	t.indexerMgr.RegisterNode(nodeID, codebases, sseChan)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// Send initial registration acknowledgement
+	ack, _ := json.Marshal(map[string]interface{}{
+		"type":    "registered",
+		"node_id": nodeID,
+	})
+	fmt.Fprintf(w, "data: %s\n\n", ack)
+	flusher.Flush()
+
+	// Heartbeat ticker
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	ctx := r.Context()
+	defer t.indexerMgr.DeregisterNode(nodeID)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-sseChan:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(w, "data: %s\n\n", msg)
+			flusher.Flush()
+		case <-ticker.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// handleIndexerStatus receives progress updates from indexer daemons.
+func (t *HTTPTransport) handleIndexerStatus(w http.ResponseWriter, r *http.Request) {
+	if !t.checkAuth(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var report struct {
+		RequestID      string `json:"request_id"`
+		NodeID         string `json:"node_id"`
+		Codebase       string `json:"codebase"`
+		Status         string `json:"status"`
+		FilesTotal     int    `json:"files_total"`
+		FilesProcessed int    `json:"files_processed"`
+		FilesIndexed   int    `json:"files_indexed"`
+		FilesSkipped   int    `json:"files_skipped"`
+		DurationMs     int64  `json:"duration_ms"`
+		Error          string `json:"error"`
+	}
+
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&report); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	defer r.Body.Close()
+
+	if report.RequestID == "" || report.NodeID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "request_id and node_id required")
+		return
+	}
+
+	t.indexerMgr.UpdateStatus(
+		report.RequestID, report.NodeID, report.Codebase, report.Status,
+		report.FilesTotal, report.FilesProcessed, report.FilesIndexed, report.FilesSkipped,
+		report.DurationMs, report.Error,
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
+}
+
+// handleIndexerNodes returns a list of connected indexer nodes and their status.
+func (t *HTTPTransport) handleIndexerNodes(w http.ResponseWriter, r *http.Request) {
+	if !t.checkAuth(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	nodes := t.indexerMgr.GetNodes()
+
+	type nodeInfo struct {
+		NodeID      string   `json:"node_id"`
+		Codebases   []string `json:"codebases"`
+		Status      string   `json:"status"`
+		ConnectedAt string   `json:"connected_at"`
+		LastSeen    string   `json:"last_seen"`
+	}
+
+	var out []nodeInfo
+	for _, n := range nodes {
+		out = append(out, nodeInfo{
+			NodeID:      n.NodeID,
+			Codebases:   n.Codebases,
+			Status:      n.Status,
+			ConnectedAt: n.ConnectedAt.Format(time.RFC3339),
+			LastSeen:    n.LastSeen.Format(time.RFC3339),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"nodes": out})
 }
 
 // updateIndexMetrics queries backends and sets Prometheus index size gauges for all codebases.

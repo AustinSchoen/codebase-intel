@@ -55,6 +55,7 @@ type Server struct {
 	summarAPIKey  string // stored for per-codebase generator creation
 	summarModel   string
 	summarEnabled bool
+	indexerMgr    *IndexerManager // set in HTTP mode for reindex tools
 }
 
 // NewServer creates a new MCP server.
@@ -324,6 +325,29 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 				"required": []string{"codebase"},
 			},
 		},
+		{
+			"name":        "reindex",
+			"description": "Trigger a reindex of a codebase. Sends a command to the connected indexer daemon. Returns immediately with a request ID that can be tracked with reindex_status.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"codebase": codebaseParam,
+					"full":     map[string]interface{}{"type": "boolean", "default": false, "description": "Force full re-index (ignore content hashes). Default is incremental."},
+				},
+				"required": []string{"codebase"},
+			},
+		},
+		{
+			"name":        "reindex_status",
+			"description": "Check the status of a reindex operation. Can query by request_id, codebase, or return all recent statuses.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"request_id": map[string]interface{}{"type": "string", "description": "Specific reindex request ID to check"},
+					"codebase":   map[string]interface{}{"type": "string", "description": "Return latest reindex status for this codebase"},
+				},
+			},
+		},
 	}
 
 	return &jsonrpcResponse{
@@ -373,6 +397,10 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 		result, err, codebase = s.toolExplainSubsystem(ctx, params.Arguments)
 	case "generate_claude_md":
 		result, err, codebase = s.toolGenerateClaudeMD(ctx, params.Arguments)
+	case "reindex":
+		result, err, codebase = s.toolReindex(ctx, params.Arguments)
+	case "reindex_status":
+		result, err = s.toolReindexStatus(ctx, params.Arguments)
 	default:
 		return &jsonrpcResponse{
 			JSONRPC: "2.0",
@@ -453,23 +481,48 @@ func (s *Server) toolListCodebases(ctx context.Context) (interface{}, error) {
 		return nil, fmt.Errorf("list codebases: %w", err)
 	}
 
+	type indexerInfo struct {
+		Connected bool   `json:"connected"`
+		NodeID    string `json:"node_id,omitempty"`
+		LastSeen  string `json:"last_seen,omitempty"`
+		Status    string `json:"status,omitempty"`
+	}
+
 	type codebaseResult struct {
-		ID          string `json:"id"`
-		DisplayName string `json:"display_name"`
-		RootPath    string `json:"root_path,omitempty"`
-		FileCount   int64  `json:"file_count"`
-		SymbolCount int64  `json:"symbol_count"`
+		ID          string       `json:"id"`
+		DisplayName string       `json:"display_name"`
+		RootPath    string       `json:"root_path,omitempty"`
+		FileCount   int64        `json:"file_count"`
+		SymbolCount int64        `json:"symbol_count"`
+		Indexer     *indexerInfo `json:"indexer,omitempty"`
 	}
 
 	var out []codebaseResult
 	for _, cb := range codebases {
-		out = append(out, codebaseResult{
+		cr := codebaseResult{
 			ID:          cb.ID,
 			DisplayName: cb.DisplayName,
 			RootPath:    cb.RootPath,
 			FileCount:   cb.FileCount,
 			SymbolCount: cb.SymbolCount,
-		})
+		}
+
+		// Add indexer connection status if manager is available
+		if s.indexerMgr != nil {
+			node := s.indexerMgr.GetNodeForCodebase(cb.ID)
+			if node != nil {
+				cr.Indexer = &indexerInfo{
+					Connected: true,
+					NodeID:    node.NodeID,
+					LastSeen:  node.LastSeen.Format(time.RFC3339),
+					Status:    node.Status,
+				}
+			} else {
+				cr.Indexer = &indexerInfo{Connected: false}
+			}
+		}
+
+		out = append(out, cr)
 	}
 
 	return map[string]interface{}{"codebases": out}, nil
@@ -1114,6 +1167,78 @@ func (s *Server) toolGenerateClaudeMD(ctx context.Context, args json.RawMessage)
 	}
 
 	return map[string]interface{}{"content": content, "codebase": codebase}, nil, codebase
+}
+
+func (s *Server) toolReindex(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	if s.indexerMgr == nil {
+		return nil, fmt.Errorf("reindex not available (server not in HTTP mode)"), ""
+	}
+
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
+	var params struct {
+		Full bool `json:"full"`
+	}
+	if args != nil {
+		json.Unmarshal(args, &params)
+	}
+
+	requestID, err := s.indexerMgr.SendReindex(codebase, params.Full)
+	if err != nil {
+		return nil, err, codebase
+	}
+
+	reindexType := "incremental"
+	if params.Full {
+		reindexType = "full"
+	}
+
+	return map[string]interface{}{
+		"request_id": requestID,
+		"codebase":   codebase,
+		"type":       reindexType,
+		"status":     "requested",
+	}, nil, codebase
+}
+
+func (s *Server) toolReindexStatus(ctx context.Context, args json.RawMessage) (interface{}, error) {
+	if s.indexerMgr == nil {
+		return nil, fmt.Errorf("reindex_status not available (server not in HTTP mode)")
+	}
+
+	var params struct {
+		RequestID string `json:"request_id"`
+		Codebase  string `json:"codebase"`
+	}
+	if args != nil {
+		json.Unmarshal(args, &params)
+	}
+
+	if params.RequestID != "" {
+		req := s.indexerMgr.GetReindexStatus(params.RequestID)
+		if req == nil {
+			return map[string]interface{}{"error": "request not found", "request_id": params.RequestID}, nil
+		}
+		return req, nil
+	}
+
+	if params.Codebase != "" {
+		req := s.indexerMgr.GetReindexStatusByCodebase(params.Codebase)
+		if req == nil {
+			return map[string]interface{}{"message": "no reindex history for codebase", "codebase": params.Codebase}, nil
+		}
+		return req, nil
+	}
+
+	// Return all
+	all := s.indexerMgr.GetAllReindexStatuses()
+	if len(all) == 0 {
+		return map[string]interface{}{"message": "no reindex requests recorded"}, nil
+	}
+	return map[string]interface{}{"requests": all}, nil
 }
 
 func (s *Server) writeResponse(resp *jsonrpcResponse) {

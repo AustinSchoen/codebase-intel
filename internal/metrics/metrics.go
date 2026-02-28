@@ -81,6 +81,42 @@ var (
 		},
 		[]string{"codebase"},
 	)
+
+	// ReindexRequestsTotal counts reindex requests by codebase and type.
+	ReindexRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "codebase_intel_reindex_requests_total",
+			Help: "Total number of reindex requests",
+		},
+		[]string{"codebase", "type"},
+	)
+
+	// ReindexDuration tracks reindex duration in seconds by codebase.
+	ReindexDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "codebase_intel_reindex_duration_seconds",
+			Help:    "Duration of reindex operations in seconds",
+			Buckets: []float64{1, 5, 10, 30, 60, 120, 300, 600, 1800},
+		},
+		[]string{"codebase"},
+	)
+
+	// IndexerConnectedNodes tracks the number of connected indexer daemon nodes.
+	IndexerConnectedNodes = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "codebase_intel_indexer_connected_nodes",
+			Help: "Number of currently connected indexer daemon nodes",
+		},
+	)
+
+	// FileWatchEventsTotal counts fsnotify events processed by codebase.
+	FileWatchEventsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "codebase_intel_file_watch_events_total",
+			Help: "Total number of file watch events processed",
+		},
+		[]string{"codebase"},
+	)
 )
 
 func init() {
@@ -92,6 +128,10 @@ func init() {
 	prometheus.MustRegister(SearchResultsTotal)
 	prometheus.MustRegister(SearchRelevanceScore)
 	prometheus.MustRegister(SearchEmptyTotal)
+	prometheus.MustRegister(ReindexRequestsTotal)
+	prometheus.MustRegister(ReindexDuration)
+	prometheus.MustRegister(IndexerConnectedNodes)
+	prometheus.MustRegister(FileWatchEventsTotal)
 }
 
 // RecordToolCall records a tool call's count and latency with codebase label.
@@ -113,6 +153,26 @@ func RecordSearchMetrics(codebase string, resultCount int, topScore float64) {
 	} else {
 		SearchRelevanceScore.WithLabelValues(codebase).Observe(topScore)
 	}
+}
+
+// RecordReindexRequest records a reindex request.
+func RecordReindexRequest(codebase, reindexType string) {
+	ReindexRequestsTotal.WithLabelValues(codebase, reindexType).Inc()
+}
+
+// RecordReindexDuration records the duration of a reindex operation.
+func RecordReindexDuration(codebase string, duration time.Duration) {
+	ReindexDuration.WithLabelValues(codebase).Observe(duration.Seconds())
+}
+
+// SetIndexerConnectedNodes sets the current number of connected indexer nodes.
+func SetIndexerConnectedNodes(count float64) {
+	IndexerConnectedNodes.Set(count)
+}
+
+// RecordFileWatchEvent records a file watch event.
+func RecordFileWatchEvent(codebase string) {
+	FileWatchEventsTotal.WithLabelValues(codebase).Inc()
 }
 
 // StartHTTPServer starts a Prometheus metrics HTTP server on the given port.

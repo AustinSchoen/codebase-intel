@@ -19,6 +19,10 @@ func main() {
 		configFile = flag.String("config", "", "Path to config.yaml")
 		reindex    = flag.Bool("reindex", false, "Force full re-index (ignore content hashes)")
 		migrate    = flag.Bool("migrate", false, "Run database migrations and exit")
+		daemon     = flag.Bool("daemon", false, "Run in daemon mode (watch files + register with MCP server)")
+		serverURL  = flag.String("server-url", "", "MCP server URL for daemon mode (e.g., https://codebase-intel.example.com)")
+		serverKey  = flag.String("server-key", "", "Bearer token for MCP server authentication")
+		nodeID     = flag.String("node-id", "", "Node identifier for daemon registration (defaults to hostname)")
 	)
 	flag.Parse()
 
@@ -62,7 +66,40 @@ func main() {
 		return
 	}
 
-	// Run indexer
+	// Daemon mode
+	if *daemon {
+		if *serverURL == "" {
+			fmt.Fprintf(os.Stderr, "Error: -server-url is required in daemon mode\n")
+			os.Exit(1)
+		}
+
+		nid := *nodeID
+		if nid == "" {
+			hostname, err := os.Hostname()
+			if err != nil {
+				nid = "unknown"
+			} else {
+				nid = hostname
+			}
+		}
+
+		d := indexer.NewDaemon(idx, indexer.DaemonConfig{
+			ServerURL: *serverURL,
+			ServerKey: *serverKey,
+			NodeID:    nid,
+		})
+
+		fmt.Fprintf(os.Stderr, "Starting daemon mode: node=%s codebase=%s server=%s\n",
+			nid, cfg.Codebase.Name, *serverURL)
+
+		if err := d.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Daemon error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Run indexer (one-shot mode)
 	if err := idx.RunOnce(); err != nil {
 		fmt.Fprintf(os.Stderr, "Indexer error: %v\n", err)
 		os.Exit(1)
