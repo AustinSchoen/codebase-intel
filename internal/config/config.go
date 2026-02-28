@@ -17,6 +17,14 @@ type Config struct {
 	Metadata  MetadataConfig  `yaml:"metadata_store"`
 	Summaries SummaryConfig   `yaml:"summaries"`
 	Metrics   MetricsConfig   `yaml:"metrics"`
+	Reranking RerankConfig    `yaml:"reranking"`
+}
+
+type RerankConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Provider  string `yaml:"provider"`
+	Model     string `yaml:"model"`
+	APIKeyEnv string `yaml:"api_key_env"`
 }
 
 type CodebaseConfig struct {
@@ -149,6 +157,15 @@ func (c *Config) applyDefaults() {
 	if c.Vector.APIKeyEnv == "" {
 		c.Vector.APIKeyEnv = "QDRANT_API_KEY"
 	}
+	if c.Reranking.APIKeyEnv == "" {
+		c.Reranking.APIKeyEnv = "COHERE_API_KEY"
+	}
+	if c.Reranking.Model == "" {
+		c.Reranking.Model = "rerank-v3.5"
+	}
+	if c.Reranking.Provider == "" {
+		c.Reranking.Provider = "cohere"
+	}
 }
 
 // Validate checks that required fields are present and values are sane.
@@ -207,6 +224,7 @@ type ResolvedEnv struct {
 	PGUser          string
 	PGPassword      string
 	SummaryAPIKey   string
+	CohereAPIKey    string
 }
 
 // ResolveEnv resolves environment variable references in the config.
@@ -239,6 +257,10 @@ func (c *Config) ResolveEnv() (ResolvedEnv, error) {
 
 	if c.Summaries.Enabled && c.Summaries.APIKeyEnv != "" {
 		env.SummaryAPIKey = os.Getenv(c.Summaries.APIKeyEnv)
+	}
+
+	if c.Reranking.Enabled && c.Reranking.APIKeyEnv != "" {
+		env.CohereAPIKey = os.Getenv(c.Reranking.APIKeyEnv)
 	}
 
 	if len(errs) > 0 {

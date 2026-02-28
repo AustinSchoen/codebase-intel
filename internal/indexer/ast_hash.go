@@ -6,8 +6,12 @@ import (
 	"fmt"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/c"
+	"github.com/smacker/go-tree-sitter/cpp"
 	"github.com/smacker/go-tree-sitter/golang"
+	"github.com/smacker/go-tree-sitter/javascript"
 	"github.com/smacker/go-tree-sitter/python"
+	"github.com/smacker/go-tree-sitter/rust"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 )
 
@@ -21,8 +25,16 @@ func computeASTHash(source []byte, lang string) (string, error) {
 		language = golang.GetLanguage()
 	case "python", "py":
 		language = python.GetLanguage()
-	case "typescript", "ts":
+	case "typescript", "ts", "tsx":
 		language = typescript.GetLanguage()
+	case "javascript", "js", "jsx":
+		language = javascript.GetLanguage()
+	case "rust", "rs":
+		language = rust.GetLanguage()
+	case "c", "h":
+		language = c.GetLanguage()
+	case "cpp", "cc", "hpp":
+		language = cpp.GetLanguage()
 	default:
 		return "", fmt.Errorf("unsupported language for AST hash: %s", lang)
 	}

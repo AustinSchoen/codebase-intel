@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AustinSchoen/codebase-intel/internal/chunker"
 	"github.com/AustinSchoen/codebase-intel/internal/config"
@@ -170,7 +171,9 @@ func (idx *Indexer) fullIndex(ctx context.Context) error {
 		return fmt.Errorf("walking codebase: %w", err)
 	}
 
-	idx.logger.Printf("found %d files to index", len(files))
+	totalFiles := len(files)
+	idx.logger.Printf("found %d files to index", totalFiles)
+	startTime := time.Now()
 
 	// Concurrent indexing pipeline
 	concurrency := idx.cfg.Indexing.ConcurrentFiles
@@ -213,16 +216,20 @@ func (idx *Indexer) fullIndex(ctx context.Context) error {
 			} else {
 				skipped++
 			}
-			total := indexed + skipped
-			if total%100 == 0 {
-				idx.logger.Printf("progress: %d indexed, %d skipped of %d total", indexed, skipped, len(files))
+			processed := indexed + skipped
+			if processed%50 == 0 || processed == totalFiles {
+				pct := float64(processed) / float64(totalFiles) * 100
+				idx.logger.Printf("progress: %d/%d files (%.0f%%)", processed, totalFiles, pct)
 			}
 			mu.Unlock()
 		}(file)
 	}
 	wg.Wait()
 
-	idx.logger.Printf("indexing complete: %d indexed, %d unchanged", indexed, skipped)
+	elapsed := time.Since(startTime)
+	rate := float64(totalFiles) / elapsed.Seconds()
+	idx.logger.Printf("indexing complete: %d files in %.1fs (%.1f files/sec) — %d indexed, %d unchanged",
+		totalFiles, elapsed.Seconds(), rate, indexed, skipped)
 
 	// Resolve and store relationships
 	if len(allRawRels) > 0 {
@@ -527,9 +534,18 @@ func resolveTarget(name string, qualifiedToID map[string]string, nameToIDs map[s
 func (idx *Indexer) detectLanguage(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	langMap := map[string]string{
-		".go": "go",
-		".py": "python",
-		".ts": "typescript",
+		".go":   "go",
+		".py":   "python",
+		".ts":   "typescript",
+		".tsx":  "tsx",
+		".js":   "javascript",
+		".jsx":  "jsx",
+		".rs":   "rust",
+		".c":    "c",
+		".h":    "h",
+		".cpp":  "cpp",
+		".cc":   "cc",
+		".hpp":  "hpp",
 	}
 
 	lang, ok := langMap[ext]
@@ -538,12 +554,32 @@ func (idx *Indexer) detectLanguage(path string) string {
 	}
 
 	// Check if this language is in the configured languages
+	// Normalize language families for matching
+	family := langFamily(lang)
 	for _, configured := range idx.cfg.Codebase.Languages {
-		if configured == lang || configured == ext[1:] {
+		if configured == lang || configured == ext[1:] || configured == family {
 			return lang
 		}
 	}
 	return ""
+}
+
+// langFamily maps language variants to their family for config matching.
+func langFamily(lang string) string {
+	switch lang {
+	case "tsx":
+		return "typescript"
+	case "jsx":
+		return "javascript"
+	case "cc", "hpp":
+		return "cpp"
+	case "h":
+		return "c"
+	case "rs":
+		return "rust"
+	default:
+		return lang
+	}
 }
 
 // extractName gets the short name from a qualified name (e.g. "Foo.Bar" -> "Bar").

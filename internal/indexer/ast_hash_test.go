@@ -81,7 +81,7 @@ def hello():
 }
 
 func TestComputeASTHash_UnsupportedLanguage(t *testing.T) {
-	_, err := computeASTHash([]byte("hello"), "rust")
+	_, err := computeASTHash([]byte("hello"), "haskell")
 	if err == nil {
 		t.Error("expected error for unsupported language")
 	}

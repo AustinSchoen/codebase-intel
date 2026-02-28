@@ -1,0 +1,77 @@
+[
+  {
+    "query": "hybrid search with Qdrant",
+    "expected_symbols": ["HybridSearch", "hybridQuery"],
+    "expected_files": ["internal/storage/qdrant/client.go"]
+  },
+  {
+    "query": "parse Go source code",
+    "expected_symbols": ["ParseFile", "Parser"],
+    "expected_files": ["internal/parser/parser.go"]
+  },
+  {
+    "query": "embed text with Voyage",
+    "expected_symbols": ["Embed", "EmbedBatch", "VoyageClient"],
+    "expected_files": ["internal/embedding/voyage.go"]
+  },
+  {
+    "query": "store symbols in database",
+    "expected_symbols": ["UpsertSymbols", "UpsertChunks"],
+    "expected_files": ["internal/storage/postgres/store.go"]
+  },
+  {
+    "query": "configuration loading",
+    "expected_symbols": ["LoadConfig", "Config"],
+    "expected_files": ["internal/config/config.go"]
+  },
+  {
+    "query": "garbage collection deleted files",
+    "expected_symbols": ["sweepDeletedFiles"],
+    "expected_files": ["internal/indexer/gc.go"]
+  },
+  {
+    "query": "branch switching detection",
+    "expected_symbols": ["Watcher", "handleBranchSwitch"],
+    "expected_files": ["internal/indexer/watcher.go"]
+  },
+  {
+    "query": "UE macro parsing",
+    "expected_symbols": ["ParseUEMacros", "UEMacroInfo"],
+    "expected_files": ["internal/parser/ue_macros.go"]
+  },
+  {
+    "query": "generate module summary",
+    "expected_symbols": ["GenerateModuleSummary", "Generator"],
+    "expected_files": ["internal/summary/generator.go"]
+  },
+  {
+    "query": "MCP tool handler",
+    "expected_symbols": ["handleToolCall", "Server"],
+    "expected_files": ["internal/mcp/server.go"]
+  },
+  {
+    "query": "relationship extraction",
+    "expected_symbols": ["ExtractRelationships"],
+    "expected_files": ["internal/parser/relationships.go"]
+  },
+  {
+    "query": "file watching for changes",
+    "expected_symbols": ["Watch", "Watcher"],
+    "expected_files": ["internal/indexer/watcher.go"]
+  },
+  {
+    "query": "compute AST hash",
+    "expected_symbols": ["ComputeASTHash"],
+    "expected_files": ["internal/indexer/ast_hash.go"]
+  },
+  {
+    "query": "prometheus metrics endpoint",
+    "expected_symbols": ["StartHTTPServer", "RecordToolCall"],
+    "expected_files": ["internal/metrics/metrics.go"]
+  },
+  {
+    "query": "class hierarchy traversal",
+    "expected_symbols": ["GetClassHierarchy"],
+    "expected_files": ["internal/storage/postgres/store.go"]
+  }
+]
