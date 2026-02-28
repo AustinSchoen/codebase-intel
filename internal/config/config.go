@@ -141,7 +141,7 @@ func (c *Config) applyDefaults() {
 		c.Summaries.APIKeyEnv = "ANTHROPIC_API_KEY"
 	}
 	if c.Metrics.Port == 0 {
-		c.Metrics.Port = 9090
+		c.Metrics.Port = 9091
 	}
 	if c.Vector.CollectionPrefix == "" {
 		c.Vector.CollectionPrefix = "codebase"
