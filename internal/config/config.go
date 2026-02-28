@@ -174,6 +174,7 @@ func (c *Config) applyDefaults() {
 }
 
 // Validate checks that required fields are present and values are sane.
+// Used by the indexer which requires full codebase config.
 func (c *Config) Validate() error {
 	var errs []string
 
@@ -220,6 +221,45 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// ValidateForServer checks config for server mode (multi-codebase).
+// Does not require codebase.path, codebase.name, or indexing config.
+func (c *Config) ValidateForServer() error {
+	var errs []string
+
+	if c.Vector.URL == "" {
+		errs = append(errs, "vector_store.url is required")
+	}
+
+	if c.Metadata.Host == "" {
+		errs = append(errs, "metadata_store.host is required")
+	}
+	if c.Metadata.Database == "" {
+		errs = append(errs, "metadata_store.database is required")
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// LoadFromFileForServer reads config for server mode (no codebase config required).
+func LoadFromFileForServer(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	cfg.applyDefaults()
+	if err := cfg.ValidateForServer(); err != nil {
+		return nil, fmt.Errorf("config validation: %w", err)
+	}
+	return &cfg, nil
 }
 
 // ResolvedEnv holds the actual values from environment variables.

@@ -16,13 +16,16 @@ func main() {
 	addr := flag.String("addr", ":8090", "Listen address for HTTP transport")
 	flag.Parse()
 
-	var cfg *config.Config
-	var err error
-	if *configFile != "" {
-		cfg, err = config.LoadFromFile(*configFile)
-	} else {
-		cfg, err = config.Load()
+	cfgPath := *configFile
+	if cfgPath == "" {
+		cfgPath = os.Getenv("CODEBASE_INTEL_CONFIG")
+		if cfgPath == "" {
+			cfgPath = "config.yaml"
+		}
 	}
+
+	// Server mode: use relaxed validation (no codebase config required)
+	cfg, err := config.LoadFromFileForServer(cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)

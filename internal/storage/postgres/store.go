@@ -914,6 +914,52 @@ func nilIfZero(n int) interface{} {
 	return n
 }
 
+// CodebaseInfo holds metadata about an indexed codebase.
+type CodebaseInfo struct {
+	ID          string
+	DisplayName string
+	RootPath    string
+	FileCount   int64
+	SymbolCount int64
+}
+
+// ListCodebases returns all indexed codebases with stats.
+func (s *Store) ListCodebases(ctx context.Context) ([]CodebaseInfo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.id, COALESCE(c.display_name, c.id), COALESCE(c.root_path, ''),
+			(SELECT COUNT(*) FROM file_state WHERE codebase_id = c.id),
+			(SELECT COUNT(*) FROM symbols WHERE codebase_id = c.id)
+		FROM codebases c
+		ORDER BY c.id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list codebases: %w", err)
+	}
+	defer rows.Close()
+
+	var results []CodebaseInfo
+	for rows.Next() {
+		var cb CodebaseInfo
+		if err := rows.Scan(&cb.ID, &cb.DisplayName, &cb.RootPath, &cb.FileCount, &cb.SymbolCount); err != nil {
+			return nil, err
+		}
+		results = append(results, cb)
+	}
+	return results, rows.Err()
+}
+
+// GetCodebaseRootPath returns the root path for a codebase, or empty string if not found.
+func (s *Store) GetCodebaseRootPath(ctx context.Context, codebaseID string) (string, error) {
+	var rootPath string
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(root_path, '') FROM codebases WHERE id = $1
+	`, codebaseID).Scan(&rootPath)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	return rootPath, err
+}
+
 // GetIndexCounts returns counts of symbols, chunks (file_state entries), and relationships for a codebase.
 func (s *Store) GetIndexCounts(ctx context.Context, codebaseName string) (symbols, files, relationships int64, err error) {
 	row := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM symbols WHERE codebase_id = $1`, codebaseName)

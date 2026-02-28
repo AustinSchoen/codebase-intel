@@ -46,13 +46,15 @@ type rpcError struct {
 
 // Server implements the MCP protocol over stdio.
 type Server struct {
-	cfg       *config.Config
-	store     *postgres.Store
-	qdrant    *qdrant.Client
-	embedder  *embedding.VoyageClient
-	summarGen *summary.Generator
-	reranker  rerank.Reranker
-	logger    *log.Logger
+	cfg           *config.Config
+	store         *postgres.Store
+	qdrant        *qdrant.Client
+	embedder      *embedding.VoyageClient
+	reranker      rerank.Reranker
+	logger        *log.Logger
+	summarAPIKey  string // stored for per-codebase generator creation
+	summarModel   string
+	summarEnabled bool
 }
 
 // NewServer creates a new MCP server.
@@ -128,15 +130,11 @@ func (s *Server) initBackends(ctx context.Context) error {
 		s.cfg.Indexing.ConcurrentReqs,
 	)
 
-	// Summary generator
+	// Store summary config for per-codebase generator creation
 	if s.cfg.Summaries.Enabled && env.SummaryAPIKey != "" && s.store != nil {
-		s.summarGen = summary.NewGenerator(
-			env.SummaryAPIKey,
-			s.cfg.Summaries.Model,
-			s.store,
-			s.cfg.Codebase.Name,
-			s.logger,
-		)
+		s.summarAPIKey = env.SummaryAPIKey
+		s.summarModel = s.cfg.Summaries.Model
+		s.summarEnabled = true
 	}
 
 	// Reranker
@@ -146,6 +144,14 @@ func (s *Server) initBackends(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// getSummarGen creates a summary generator for a specific codebase.
+func (s *Server) getSummarGen(codebaseID string) *summary.Generator {
+	if !s.summarEnabled {
+		return nil
+	}
+	return summary.NewGenerator(s.summarAPIKey, s.summarModel, s.store, codebaseID, s.logger)
 }
 
 func (s *Server) handleRequest(ctx context.Context, req *jsonrpcRequest) *jsonrpcResponse {
@@ -178,26 +184,41 @@ func (s *Server) handleInitialize(req *jsonrpcRequest) *jsonrpcResponse {
 			},
 			"serverInfo": map[string]interface{}{
 				"name":    "codebase-intel",
-				"version": "0.1.0",
+				"version": "0.2.0",
 			},
 		},
 	}
 }
 
+// codebaseParam is the shared schema for the codebase parameter across all tools.
+var codebaseParam = map[string]interface{}{
+	"type":        "string",
+	"description": "Codebase identifier (use list_codebases to discover available codebases)",
+}
+
 func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 	tools := []map[string]interface{}{
 		{
+			"name":        "list_codebases",
+			"description": "List all indexed codebases with file counts, symbol counts, and metadata. Use this to discover available codebases before querying.",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
 			"name":        "search_code",
-			"description": "Search the indexed codebase using natural language or code patterns. Uses hybrid semantic + keyword search.",
+			"description": "Search an indexed codebase using natural language or code patterns. Uses hybrid semantic + keyword search.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
+					"codebase":      codebaseParam,
 					"query":         map[string]interface{}{"type": "string", "description": "Natural language query or code pattern to search for"},
 					"module_filter": map[string]interface{}{"type": "string", "description": "Restrict search to a specific module"},
 					"kind_filter":   map[string]interface{}{"type": "string", "enum": []string{"function", "class", "struct", "enum", "macro", "any"}},
 					"limit":         map[string]interface{}{"type": "integer", "default": 10},
 				},
-				"required": []string{"query"},
+				"required": []string{"codebase", "query"},
 			},
 		},
 		{
@@ -206,20 +227,23 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"name": map[string]interface{}{"type": "string", "description": "Symbol name, can be short or qualified"},
-					"kind": map[string]interface{}{"type": "string", "enum": []string{"function", "class", "struct", "enum", "macro", "any"}, "default": "any"},
+					"codebase": codebaseParam,
+					"name":     map[string]interface{}{"type": "string", "description": "Symbol name, can be short or qualified"},
+					"kind":     map[string]interface{}{"type": "string", "enum": []string{"function", "class", "struct", "enum", "macro", "any"}, "default": "any"},
 				},
-				"required": []string{"name"},
+				"required": []string{"codebase", "name"},
 			},
 		},
 		{
 			"name":        "list_modules",
-			"description": "List all top-level modules in the codebase with file counts and statistics.",
+			"description": "List all top-level modules in a codebase with file counts and statistics.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"parent": map[string]interface{}{"type": "string", "description": "List submodules under a parent module"},
+					"codebase": codebaseParam,
+					"parent":   map[string]interface{}{"type": "string", "description": "List submodules under a parent module"},
 				},
+				"required": []string{"codebase"},
 			},
 		},
 		{
@@ -228,11 +252,12 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
+					"codebase": codebaseParam,
 					"symbol":   map[string]interface{}{"type": "string", "description": "Symbol name to find references for (short or qualified)"},
 					"ref_kind": map[string]interface{}{"type": "string", "enum": []string{"calls", "inherits", "references", "any"}, "default": "any", "description": "Filter by relationship kind"},
 					"limit":    map[string]interface{}{"type": "integer", "default": 20},
 				},
-				"required": []string{"symbol"},
+				"required": []string{"codebase", "symbol"},
 			},
 		},
 		{
@@ -241,24 +266,26 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
+					"codebase":   codebaseParam,
 					"class_name": map[string]interface{}{"type": "string", "description": "Class or struct name to start from"},
 					"direction":  map[string]interface{}{"type": "string", "enum": []string{"parents", "children", "both"}, "default": "both"},
 					"depth":      map[string]interface{}{"type": "integer", "default": 5, "description": "Maximum traversal depth"},
 				},
-				"required": []string{"class_name"},
+				"required": []string{"codebase", "class_name"},
 			},
 		},
 		{
 			"name":        "get_file_context",
-			"description": "Get a file's content with architectural context: defined symbols, what depends on it, and module info.",
+			"description": "Get a file's architectural context: defined symbols, what depends on it, and module info. File content is included when the server has local access to the codebase.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
+					"codebase":   codebaseParam,
 					"filepath":   map[string]interface{}{"type": "string", "description": "Relative filepath within the codebase"},
 					"line_start": map[string]interface{}{"type": "integer", "description": "Start line (optional, returns range instead of full file)"},
 					"line_end":   map[string]interface{}{"type": "integer", "description": "End line (optional)"},
 				},
-				"required": []string{"filepath"},
+				"required": []string{"codebase", "filepath"},
 			},
 		},
 		{
@@ -267,9 +294,10 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"module": map[string]interface{}{"type": "string", "description": "Module name (e.g., 'Chaos', 'GameplayAbilities', 'parser')"},
+					"codebase": codebaseParam,
+					"module":   map[string]interface{}{"type": "string", "description": "Module name (e.g., 'Chaos', 'GameplayAbilities', 'parser')"},
 				},
-				"required": []string{"module"},
+				"required": []string{"codebase", "module"},
 			},
 		},
 		{
@@ -278,9 +306,10 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"topic": map[string]interface{}{"type": "string", "description": "The subsystem or topic to explain (e.g., 'character movement', 'replication', 'indexing pipeline')"},
+					"codebase": codebaseParam,
+					"topic":    map[string]interface{}{"type": "string", "description": "The subsystem or topic to explain (e.g., 'character movement', 'replication', 'indexing pipeline')"},
 				},
-				"required": []string{"topic"},
+				"required": []string{"codebase", "topic"},
 			},
 		},
 		{
@@ -289,8 +318,10 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
+					"codebase":    codebaseParam,
 					"top_symbols": map[string]interface{}{"type": "integer", "default": 20, "description": "Number of top symbols to include (by reference count)"},
 				},
+				"required": []string{"codebase"},
 			},
 		},
 	}
@@ -319,26 +350,29 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 
 	var result interface{}
 	var err error
+	var codebase string
 
 	switch params.Name {
+	case "list_codebases":
+		result, err = s.toolListCodebases(ctx)
 	case "search_code":
-		result, err = s.toolSearchCode(ctx, params.Arguments)
+		result, err, codebase = s.toolSearchCode(ctx, params.Arguments)
 	case "get_symbol":
-		result, err = s.toolGetSymbol(ctx, params.Arguments)
+		result, err, codebase = s.toolGetSymbol(ctx, params.Arguments)
 	case "list_modules":
-		result, err = s.toolListModules(ctx, params.Arguments)
+		result, err, codebase = s.toolListModules(ctx, params.Arguments)
 	case "get_references":
-		result, err = s.toolGetReferences(ctx, params.Arguments)
+		result, err, codebase = s.toolGetReferences(ctx, params.Arguments)
 	case "get_class_hierarchy":
-		result, err = s.toolGetClassHierarchy(ctx, params.Arguments)
+		result, err, codebase = s.toolGetClassHierarchy(ctx, params.Arguments)
 	case "get_file_context":
-		result, err = s.toolGetFileContext(ctx, params.Arguments)
+		result, err, codebase = s.toolGetFileContext(ctx, params.Arguments)
 	case "get_module_summary":
-		result, err = s.toolGetModuleSummary(ctx, params.Arguments)
+		result, err, codebase = s.toolGetModuleSummary(ctx, params.Arguments)
 	case "explain_subsystem":
-		result, err = s.toolExplainSubsystem(ctx, params.Arguments)
+		result, err, codebase = s.toolExplainSubsystem(ctx, params.Arguments)
 	case "generate_claude_md":
-		result, err = s.toolGenerateClaudeMD(ctx, params.Arguments)
+		result, err, codebase = s.toolGenerateClaudeMD(ctx, params.Arguments)
 	default:
 		return &jsonrpcResponse{
 			JSONRPC: "2.0",
@@ -348,7 +382,10 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 	}
 
 	// Record metrics for the tool call
-	metrics.RecordToolCall(params.Name, time.Since(start))
+	if codebase == "" {
+		codebase = "_global"
+	}
+	metrics.RecordToolCall(params.Name, codebase, time.Since(start))
 
 	if err != nil {
 		return &jsonrpcResponse{
@@ -375,7 +412,75 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 	}
 }
 
-func (s *Server) toolSearchCode(ctx context.Context, args json.RawMessage) (interface{}, error) {
+// extractCodebase extracts and validates the codebase parameter from tool arguments.
+// Returns an error listing available codebases if the parameter is missing.
+func (s *Server) extractCodebase(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Codebase string `json:"codebase"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("parsing args: %w", err)
+	}
+	if params.Codebase == "" {
+		return "", s.missingCodebaseError(ctx)
+	}
+	return params.Codebase, nil
+}
+
+// missingCodebaseError returns an error that lists all available codebases.
+func (s *Server) missingCodebaseError(ctx context.Context) error {
+	if s.store == nil {
+		return fmt.Errorf("'codebase' parameter is required (postgres not available to list codebases)")
+	}
+	codebases, err := s.store.ListCodebases(ctx)
+	if err != nil || len(codebases) == 0 {
+		return fmt.Errorf("'codebase' parameter is required. Use list_codebases to discover available codebases")
+	}
+	var names []string
+	for _, cb := range codebases {
+		names = append(names, cb.ID)
+	}
+	return fmt.Errorf("'codebase' parameter is required. Available codebases: %s", strings.Join(names, ", "))
+}
+
+func (s *Server) toolListCodebases(ctx context.Context) (interface{}, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("postgres not available")
+	}
+
+	codebases, err := s.store.ListCodebases(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list codebases: %w", err)
+	}
+
+	type codebaseResult struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+		RootPath    string `json:"root_path,omitempty"`
+		FileCount   int64  `json:"file_count"`
+		SymbolCount int64  `json:"symbol_count"`
+	}
+
+	var out []codebaseResult
+	for _, cb := range codebases {
+		out = append(out, codebaseResult{
+			ID:          cb.ID,
+			DisplayName: cb.DisplayName,
+			RootPath:    cb.RootPath,
+			FileCount:   cb.FileCount,
+			SymbolCount: cb.SymbolCount,
+		})
+	}
+
+	return map[string]interface{}{"codebases": out}, nil
+}
+
+func (s *Server) toolSearchCode(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		Query        string `json:"query"`
 		ModuleFilter string `json:"module_filter"`
@@ -383,7 +488,7 @@ func (s *Server) toolSearchCode(ctx context.Context, args json.RawMessage) (inte
 		Limit        int    `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("parsing args: %w", err)
+		return nil, fmt.Errorf("parsing args: %w", err), codebase
 	}
 	if params.Limit <= 0 {
 		params.Limit = 10
@@ -393,13 +498,13 @@ func (s *Server) toolSearchCode(ctx context.Context, args json.RawMessage) (inte
 	}
 
 	if s.embedder == nil || s.qdrant == nil {
-		return nil, fmt.Errorf("search backends not available")
+		return nil, fmt.Errorf("search backends not available"), codebase
 	}
 
 	// Generate embedding for query
 	vec, err := s.embedder.Embed(ctx, params.Query)
 	if err != nil {
-		return nil, fmt.Errorf("embedding query: %w", err)
+		return nil, fmt.Errorf("embedding query: %w", err), codebase
 	}
 
 	searchReq := qdrant.SearchRequest{
@@ -409,9 +514,9 @@ func (s *Server) toolSearchCode(ctx context.Context, args json.RawMessage) (inte
 		Limit:        params.Limit,
 	}
 
-	results, err := s.qdrant.HybridSearch(ctx, s.cfg.Codebase.Name, searchReq)
+	results, err := s.qdrant.HybridSearch(ctx, codebase, searchReq)
 	if err != nil {
-		return nil, fmt.Errorf("search: %w", err)
+		return nil, fmt.Errorf("search: %w", err), codebase
 	}
 
 	// Rerank results if enabled
@@ -433,6 +538,13 @@ func (s *Server) toolSearchCode(ctx context.Context, args json.RawMessage) (inte
 			results = reordered
 		}
 	}
+
+	// Record search quality metrics
+	var topScore float64
+	if len(results) > 0 {
+		topScore = results[0].Score
+	}
+	metrics.RecordSearchMetrics(codebase, len(results), topScore)
 
 	type searchResult struct {
 		Score         float64 `json:"score"`
@@ -472,28 +584,33 @@ func (s *Server) toolSearchCode(ctx context.Context, args json.RawMessage) (inte
 		out = append(out, sr)
 	}
 
-	return map[string]interface{}{"results": out}, nil
+	return map[string]interface{}{"results": out, "codebase": codebase}, nil, codebase
 }
 
-func (s *Server) toolGetSymbol(ctx context.Context, args json.RawMessage) (interface{}, error) {
+func (s *Server) toolGetSymbol(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		Name string `json:"name"`
 		Kind string `json:"kind"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("parsing args: %w", err)
+		return nil, fmt.Errorf("parsing args: %w", err), codebase
 	}
 	if params.Kind == "" {
 		params.Kind = "any"
 	}
 
 	if s.store == nil {
-		return nil, fmt.Errorf("postgres not available")
+		return nil, fmt.Errorf("postgres not available"), codebase
 	}
 
-	symbols, err := s.store.FuzzySearchSymbols(ctx, s.cfg.Codebase.Name, params.Name, params.Kind, 5)
+	symbols, err := s.store.FuzzySearchSymbols(ctx, codebase, params.Name, params.Kind, 5)
 	if err != nil {
-		return nil, fmt.Errorf("symbol lookup: %w", err)
+		return nil, fmt.Errorf("symbol lookup: %w", err), codebase
 	}
 
 	type symbolResult struct {
@@ -523,10 +640,15 @@ func (s *Server) toolGetSymbol(ctx context.Context, args json.RawMessage) (inter
 		})
 	}
 
-	return map[string]interface{}{"symbols": out}, nil
+	return map[string]interface{}{"symbols": out, "codebase": codebase}, nil, codebase
 }
 
-func (s *Server) toolListModules(ctx context.Context, args json.RawMessage) (interface{}, error) {
+func (s *Server) toolListModules(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		Parent string `json:"parent"`
 	}
@@ -535,12 +657,12 @@ func (s *Server) toolListModules(ctx context.Context, args json.RawMessage) (int
 	}
 
 	if s.store == nil {
-		return nil, fmt.Errorf("postgres not available")
+		return nil, fmt.Errorf("postgres not available"), codebase
 	}
 
-	modules, err := s.store.ListModules(ctx, s.cfg.Codebase.Name, params.Parent)
+	modules, err := s.store.ListModules(ctx, codebase, params.Parent)
 	if err != nil {
-		return nil, fmt.Errorf("list modules: %w", err)
+		return nil, fmt.Errorf("list modules: %w", err), codebase
 	}
 
 	type moduleResult struct {
@@ -564,29 +686,34 @@ func (s *Server) toolListModules(ctx context.Context, args json.RawMessage) (int
 		})
 	}
 
-	return map[string]interface{}{"modules": out}, nil
+	return map[string]interface{}{"modules": out, "codebase": codebase}, nil, codebase
 }
 
-func (s *Server) toolGetReferences(ctx context.Context, args json.RawMessage) (interface{}, error) {
+func (s *Server) toolGetReferences(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		Symbol  string `json:"symbol"`
 		RefKind string `json:"ref_kind"`
 		Limit   int    `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("parsing args: %w", err)
+		return nil, fmt.Errorf("parsing args: %w", err), codebase
 	}
 	if params.RefKind == "" || params.RefKind == "any" {
 		params.RefKind = ""
 	}
 
 	if s.store == nil {
-		return nil, fmt.Errorf("postgres not available")
+		return nil, fmt.Errorf("postgres not available"), codebase
 	}
 
-	refs, err := s.store.GetReferences(ctx, s.cfg.Codebase.Name, params.Symbol, params.RefKind, params.Limit)
+	refs, err := s.store.GetReferences(ctx, codebase, params.Symbol, params.RefKind, params.Limit)
 	if err != nil {
-		return nil, fmt.Errorf("get references: %w", err)
+		return nil, fmt.Errorf("get references: %w", err), codebase
 	}
 
 	type refResult struct {
@@ -616,17 +743,22 @@ func (s *Server) toolGetReferences(ctx context.Context, args json.RawMessage) (i
 		})
 	}
 
-	return map[string]interface{}{"references": out, "symbol": params.Symbol}, nil
+	return map[string]interface{}{"references": out, "symbol": params.Symbol, "codebase": codebase}, nil, codebase
 }
 
-func (s *Server) toolGetClassHierarchy(ctx context.Context, args json.RawMessage) (interface{}, error) {
+func (s *Server) toolGetClassHierarchy(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		ClassName string `json:"class_name"`
 		Direction string `json:"direction"`
 		Depth     int    `json:"depth"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("parsing args: %w", err)
+		return nil, fmt.Errorf("parsing args: %w", err), codebase
 	}
 	if params.Direction == "" {
 		params.Direction = "both"
@@ -636,12 +768,12 @@ func (s *Server) toolGetClassHierarchy(ctx context.Context, args json.RawMessage
 	}
 
 	if s.store == nil {
-		return nil, fmt.Errorf("postgres not available")
+		return nil, fmt.Errorf("postgres not available"), codebase
 	}
 
-	nodes, err := s.store.GetClassHierarchy(ctx, s.cfg.Codebase.Name, params.ClassName, params.Direction, params.Depth)
+	nodes, err := s.store.GetClassHierarchy(ctx, codebase, params.ClassName, params.Direction, params.Depth)
 	if err != nil {
-		return nil, fmt.Errorf("get class hierarchy: %w", err)
+		return nil, fmt.Errorf("get class hierarchy: %w", err), codebase
 	}
 
 	type hierarchyResult struct {
@@ -661,27 +793,32 @@ func (s *Server) toolGetClassHierarchy(ctx context.Context, args json.RawMessage
 		})
 	}
 
-	return map[string]interface{}{"class_name": params.ClassName, "hierarchy": out}, nil
+	return map[string]interface{}{"class_name": params.ClassName, "hierarchy": out, "codebase": codebase}, nil, codebase
 }
 
-func (s *Server) toolGetFileContext(ctx context.Context, args json.RawMessage) (interface{}, error) {
+func (s *Server) toolGetFileContext(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		Filepath  string `json:"filepath"`
 		LineStart int    `json:"line_start"`
 		LineEnd   int    `json:"line_end"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("parsing args: %w", err)
+		return nil, fmt.Errorf("parsing args: %w", err), codebase
 	}
 
 	if s.store == nil {
-		return nil, fmt.Errorf("postgres not available")
+		return nil, fmt.Errorf("postgres not available"), codebase
 	}
 
 	// Get symbols defined in this file
-	symbols, err := s.store.GetFileSymbols(ctx, s.cfg.Codebase.Name, params.Filepath)
+	symbols, err := s.store.GetFileSymbols(ctx, codebase, params.Filepath)
 	if err != nil {
-		return nil, fmt.Errorf("get file symbols: %w", err)
+		return nil, fmt.Errorf("get file symbols: %w", err), codebase
 	}
 
 	type symInfo struct {
@@ -709,9 +846,9 @@ func (s *Server) toolGetFileContext(ctx context.Context, args json.RawMessage) (
 	}
 
 	// Get dependents (other files that reference this file's symbols)
-	dependents, err := s.store.GetFileDependents(ctx, s.cfg.Codebase.Name, params.Filepath, 20)
+	dependents, err := s.store.GetFileDependents(ctx, codebase, params.Filepath, 20)
 	if err != nil {
-		return nil, fmt.Errorf("get file dependents: %w", err)
+		return nil, fmt.Errorf("get file dependents: %w", err), codebase
 	}
 
 	type depInfo struct {
@@ -737,11 +874,24 @@ func (s *Server) toolGetFileContext(ctx context.Context, args json.RawMessage) (
 		"module":     module,
 		"symbols":    symOut,
 		"dependents": depOut,
+		"codebase":   codebase,
 	}
 
-	// Read file content if requested (line range or full)
-	if s.cfg.Codebase.Path != "" {
-		fullPath := filepath.Join(s.cfg.Codebase.Path, params.Filepath)
+	// Try to read file content.
+	// First check if codebase.path is set in config (single-codebase / local mode).
+	// Otherwise try the root_path from the codebases table.
+	contentRead := false
+	rootPath := s.cfg.Codebase.Path
+	if rootPath == "" {
+		// Multi-codebase mode: look up root_path from database
+		dbPath, err := s.store.GetCodebaseRootPath(ctx, codebase)
+		if err == nil && dbPath != "" {
+			rootPath = dbPath
+		}
+	}
+
+	if rootPath != "" {
+		fullPath := filepath.Join(rootPath, params.Filepath)
 		data, err := os.ReadFile(fullPath)
 		if err == nil {
 			content := string(data)
@@ -760,33 +910,44 @@ func (s *Server) toolGetFileContext(ctx context.Context, args json.RawMessage) (
 				}
 			}
 			result["content"] = content
+			contentRead = true
 		}
 	}
 
-	return result, nil
+	if !contentRead {
+		result["_note"] = "File content unavailable: server does not have local access to this codebase's files. Symbols and dependency information are still available."
+	}
+
+	return result, nil, codebase
 }
 
-func (s *Server) toolGetModuleSummary(ctx context.Context, args json.RawMessage) (interface{}, error) {
+func (s *Server) toolGetModuleSummary(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		Module string `json:"module"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("parsing args: %w", err)
+		return nil, fmt.Errorf("parsing args: %w", err), codebase
 	}
 
 	if s.store == nil {
-		return nil, fmt.Errorf("postgres not available")
+		return nil, fmt.Errorf("postgres not available"), codebase
 	}
 
 	// Try to get cached summary first
-	sum, err := s.store.GetSummary(ctx, s.cfg.Codebase.Name, params.Module, "module")
+	sum, err := s.store.GetSummary(ctx, codebase, params.Module, "module")
 	if err != nil {
-		return nil, fmt.Errorf("get summary: %w", err)
+		return nil, fmt.Errorf("get summary: %w", err), codebase
 	}
 
 	// If no cached summary, try on-demand generation
-	if sum == nil && s.summarGen != nil {
-		sum, err = s.summarGen.GenerateModuleSummary(ctx, params.Module)
+	summarGen := s.getSummarGen(codebase)
+	if sum == nil && summarGen != nil {
+		sum, err = summarGen.GenerateModuleSummary(ctx, params.Module)
 		if err != nil {
 			s.logger.Printf("warning: on-demand summary generation failed: %v", err)
 			// Fall through to return module stats without summary
@@ -794,14 +955,15 @@ func (s *Server) toolGetModuleSummary(ctx context.Context, args json.RawMessage)
 	}
 
 	// Get module stats
-	modules, err := s.store.ListModules(ctx, s.cfg.Codebase.Name, params.Module)
+	modules, err := s.store.ListModules(ctx, codebase, params.Module)
 	if err != nil {
-		return nil, fmt.Errorf("list modules: %w", err)
+		return nil, fmt.Errorf("list modules: %w", err), codebase
 	}
 
 	// Build result
 	result := map[string]interface{}{
-		"module": params.Module,
+		"module":   params.Module,
+		"codebase": codebase,
 	}
 
 	if sum != nil {
@@ -836,25 +998,31 @@ func (s *Server) toolGetModuleSummary(ctx context.Context, args json.RawMessage)
 		result["summary"] = fmt.Sprintf("No summary available for module '%s'. Summary generation may be disabled or the module may not exist.", params.Module)
 	}
 
-	return result, nil
+	return result, nil, codebase
 }
 
-func (s *Server) toolExplainSubsystem(ctx context.Context, args json.RawMessage) (interface{}, error) {
+func (s *Server) toolExplainSubsystem(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		Topic string `json:"topic"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("parsing args: %w", err)
+		return nil, fmt.Errorf("parsing args: %w", err), codebase
 	}
 
-	if s.summarGen == nil {
-		return nil, fmt.Errorf("summary generation not available (check summaries.enabled and API key)")
+	summarGen := s.getSummarGen(codebase)
+	if summarGen == nil {
+		return nil, fmt.Errorf("summary generation not available (check summaries.enabled and API key)"), codebase
 	}
 
 	// Check for cached subsystem summary
-	cached, err := s.store.GetSummary(ctx, s.cfg.Codebase.Name, params.Topic, "subsystem")
+	cached, err := s.store.GetSummary(ctx, codebase, params.Topic, "subsystem")
 	if err != nil {
-		return nil, fmt.Errorf("check cached summary: %w", err)
+		return nil, fmt.Errorf("check cached summary: %w", err), codebase
 	}
 
 	if cached != nil {
@@ -866,7 +1034,8 @@ func (s *Server) toolExplainSubsystem(ctx context.Context, args json.RawMessage)
 			"explanation":     cached.SummaryText,
 			"key_classes":     keyClasses,
 			"related_modules": relatedModules,
-		}, nil
+			"codebase":        codebase,
+		}, nil, codebase
 	}
 
 	// Use semantic search to find relevant code chunks
@@ -874,7 +1043,7 @@ func (s *Server) toolExplainSubsystem(ctx context.Context, args json.RawMessage)
 	if s.embedder != nil && s.qdrant != nil {
 		vec, err := s.embedder.Embed(ctx, params.Topic)
 		if err == nil {
-			results, err := s.qdrant.HybridSearch(ctx, s.cfg.Codebase.Name, qdrant.SearchRequest{
+			results, err := s.qdrant.HybridSearch(ctx, codebase, qdrant.SearchRequest{
 				DenseVector: vec,
 				Limit:       10,
 			})
@@ -896,9 +1065,9 @@ func (s *Server) toolExplainSubsystem(ctx context.Context, args json.RawMessage)
 	}
 
 	// Generate explanation
-	explanation, keyClasses, relatedModules, err := s.summarGen.GenerateSubsystemExplanation(ctx, params.Topic, relevantChunks)
+	explanation, keyClasses, relatedModules, err := summarGen.GenerateSubsystemExplanation(ctx, params.Topic, relevantChunks)
 	if err != nil {
-		return nil, fmt.Errorf("generate explanation: %w", err)
+		return nil, fmt.Errorf("generate explanation: %w", err), codebase
 	}
 
 	return map[string]interface{}{
@@ -906,10 +1075,16 @@ func (s *Server) toolExplainSubsystem(ctx context.Context, args json.RawMessage)
 		"explanation":     explanation,
 		"key_classes":     keyClasses,
 		"related_modules": relatedModules,
-	}, nil
+		"codebase":        codebase,
+	}, nil, codebase
 }
 
-func (s *Server) toolGenerateClaudeMD(ctx context.Context, args json.RawMessage) (interface{}, error) {
+func (s *Server) toolGenerateClaudeMD(ctx context.Context, args json.RawMessage) (interface{}, error, string) {
+	codebase, err := s.extractCodebase(ctx, args)
+	if err != nil {
+		return nil, err, ""
+	}
+
 	var params struct {
 		TopSymbols int `json:"top_symbols"`
 	}
@@ -921,15 +1096,24 @@ func (s *Server) toolGenerateClaudeMD(ctx context.Context, args json.RawMessage)
 	}
 
 	if s.store == nil {
-		return nil, fmt.Errorf("postgres not available")
+		return nil, fmt.Errorf("postgres not available"), codebase
 	}
 
-	content, err := claudemd.Generate(ctx, s.cfg.Codebase.Name, s.cfg.Codebase.Path, s.store, params.TopSymbols)
+	// Look up root_path for the codebase
+	codebasePath := s.cfg.Codebase.Path
+	if codebasePath == "" {
+		dbPath, err := s.store.GetCodebaseRootPath(ctx, codebase)
+		if err == nil {
+			codebasePath = dbPath
+		}
+	}
+
+	content, err := claudemd.Generate(ctx, codebase, codebasePath, s.store, params.TopSymbols)
 	if err != nil {
-		return nil, fmt.Errorf("generate CLAUDE.md: %w", err)
+		return nil, fmt.Errorf("generate CLAUDE.md: %w", err), codebase
 	}
 
-	return map[string]interface{}{"content": content}, nil
+	return map[string]interface{}{"content": content, "codebase": codebase}, nil, codebase
 }
 
 func (s *Server) writeResponse(resp *jsonrpcResponse) {

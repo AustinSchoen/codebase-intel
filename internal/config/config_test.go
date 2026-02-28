@@ -262,3 +262,106 @@ func TestPostgresDSN(t *testing.T) {
 		t.Errorf("expected %s, got %s", expected, dsn)
 	}
 }
+
+func TestValidateForServer_NoCodebaseRequired(t *testing.T) {
+	// Server mode should work without codebase config
+	content := `
+vector_store:
+  url: "http://localhost:6333"
+metadata_store:
+  host: "localhost"
+  database: "test_db"
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFromFileForServer(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFromFileForServer should not require codebase config, got: %v", err)
+	}
+
+	// Codebase fields should be empty (not required)
+	if cfg.Codebase.Path != "" {
+		t.Errorf("expected empty codebase path, got %s", cfg.Codebase.Path)
+	}
+	if cfg.Codebase.Name != "" {
+		t.Errorf("expected empty codebase name, got %s", cfg.Codebase.Name)
+	}
+
+	// Defaults should still be applied
+	if cfg.Embedding.Model != "voyage-code-3" {
+		t.Errorf("expected default model, got %s", cfg.Embedding.Model)
+	}
+	if cfg.Metrics.Port != 9091 {
+		t.Errorf("expected default metrics port, got %d", cfg.Metrics.Port)
+	}
+}
+
+func TestValidateForServer_StillRequiresStores(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		errText string
+	}{
+		{
+			name:    "missing vector url",
+			yaml:    "metadata_store:\n  host: localhost\n  database: db",
+			errText: "vector_store.url is required",
+		},
+		{
+			name:    "missing metadata host",
+			yaml:    "vector_store:\n  url: http://localhost\nmetadata_store:\n  database: db",
+			errText: "metadata_store.host is required",
+		},
+		{
+			name:    "missing metadata database",
+			yaml:    "vector_store:\n  url: http://localhost\nmetadata_store:\n  host: localhost",
+			errText: "metadata_store.database is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfgPath := filepath.Join(tmpDir, "config.yaml")
+			if err := os.WriteFile(cfgPath, []byte(tt.yaml), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadFromFileForServer(cfgPath)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.errText) {
+				t.Errorf("expected error containing %q, got %q", tt.errText, err.Error())
+			}
+		})
+	}
+}
+
+func TestLoadFromFile_StillRequiresCodebase(t *testing.T) {
+	// Verify that the indexer's Validate() still requires codebase fields
+	content := `
+vector_store:
+  url: "http://localhost:6333"
+metadata_store:
+  host: "localhost"
+  database: "test_db"
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFromFile(cfgPath)
+	if err == nil {
+		t.Fatal("LoadFromFile should still require codebase config")
+	}
+	if !strings.Contains(err.Error(), "codebase.path is required") {
+		t.Errorf("expected codebase.path error, got %q", err.Error())
+	}
+}
