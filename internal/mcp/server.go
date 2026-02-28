@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/AustinSchoen/codebase-intel/internal/config"
 	"github.com/AustinSchoen/codebase-intel/internal/embedding"
+	"github.com/AustinSchoen/codebase-intel/internal/metrics"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/postgres"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/qdrant"
 	"github.com/AustinSchoen/codebase-intel/internal/summary"
@@ -294,6 +296,8 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 		}
 	}
 
+	start := time.Now()
+
 	var result interface{}
 	var err error
 
@@ -321,6 +325,9 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 			Error:   &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool: %s", params.Name)},
 		}
 	}
+
+	// Record metrics for the tool call
+	metrics.RecordToolCall(params.Name, time.Since(start))
 
 	if err != nil {
 		return &jsonrpcResponse{

@@ -8,8 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/fsnotify/fsnotify"
+	"sync"
 
 	"github.com/AustinSchoen/codebase-intel/internal/chunker"
 	"github.com/AustinSchoen/codebase-intel/internal/config"
@@ -95,8 +94,8 @@ func (idx *Indexer) Run() error {
 		return fmt.Errorf("full index: %w", err)
 	}
 
-	idx.logger.Println("full index complete, starting file watcher")
-	return idx.watch(ctx)
+	idx.logger.Println("full index complete, starting smart watcher")
+	return idx.watchSmart(ctx)
 }
 
 // RunOnce performs a full index without watching.
@@ -173,25 +172,55 @@ func (idx *Indexer) fullIndex(ctx context.Context) error {
 
 	idx.logger.Printf("found %d files to index", len(files))
 
-	var allRawRels []rawRelationship
-	indexed := 0
-	skipped := 0
-	for _, file := range files {
-		changed, fileRels, err := idx.indexFile(ctx, file)
-		if err != nil {
-			idx.logger.Printf("error indexing %s: %v", file, err)
-			continue
-		}
-		if changed {
-			indexed++
-			allRawRels = append(allRawRels, fileRels...)
-		} else {
-			skipped++
-		}
-		if (indexed+skipped)%100 == 0 {
-			idx.logger.Printf("progress: %d indexed, %d skipped of %d total", indexed, skipped, len(files))
-		}
+	// Concurrent indexing pipeline
+	concurrency := idx.cfg.Indexing.ConcurrentFiles
+	if concurrency <= 0 {
+		concurrency = 4
 	}
+
+	type fileResult struct {
+		rels    []rawRelationship
+		changed bool
+	}
+
+	var (
+		mu          sync.Mutex
+		allRawRels  []rawRelationship
+		indexed     int
+		skipped     int
+	)
+
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for _, file := range files {
+		wg.Add(1)
+		sem <- struct{}{} // acquire semaphore
+		go func(f string) {
+			defer wg.Done()
+			defer func() { <-sem }() // release semaphore
+
+			changed, fileRels, err := idx.indexFile(ctx, f)
+			if err != nil {
+				idx.logger.Printf("error indexing %s: %v", f, err)
+				return
+			}
+
+			mu.Lock()
+			if changed {
+				indexed++
+				allRawRels = append(allRawRels, fileRels...)
+			} else {
+				skipped++
+			}
+			total := indexed + skipped
+			if total%100 == 0 {
+				idx.logger.Printf("progress: %d indexed, %d skipped of %d total", indexed, skipped, len(files))
+			}
+			mu.Unlock()
+		}(file)
+	}
+	wg.Wait()
 
 	idx.logger.Printf("indexing complete: %d indexed, %d unchanged", indexed, skipped)
 
@@ -224,6 +253,11 @@ func (idx *Indexer) fullIndex(ctx context.Context) error {
 				idx.logger.Printf("warning: generating summaries: %v", err)
 			}
 		}
+	}
+
+	// Sweep deleted files (garbage collection)
+	if err := idx.sweepDeletedFiles(ctx); err != nil {
+		idx.logger.Printf("warning: gc sweep: %v", err)
 	}
 
 	return nil
@@ -360,12 +394,16 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, []rawRela
 		return false, nil, fmt.Errorf("upserting chunk records: %w", err)
 	}
 
+	// Compute structural AST hash (best-effort, non-fatal)
+	structuralHash, _ := computeASTHash(content, lang)
+
 	// Update file state
 	if err := idx.store.SetFileState(ctx, postgres.FileState{
-		CodebaseID:  idx.cfg.Codebase.Name,
-		Filepath:    relPath,
-		ContentHash: hash,
-		ChunkCount:  len(chunks),
+		CodebaseID:     idx.cfg.Codebase.Name,
+		Filepath:       relPath,
+		ContentHash:    hash,
+		StructuralHash: structuralHash,
+		ChunkCount:     len(chunks),
 	}); err != nil {
 		return false, nil, fmt.Errorf("setting file state: %w", err)
 	}
@@ -385,68 +423,14 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, []rawRela
 	return true, rels, nil
 }
 
-func (idx *Indexer) watch(ctx context.Context) error {
-	watcher, err := fsnotify.NewWatcher()
+// watchSmart uses the smart watcher with event batching and branch switch detection.
+func (idx *Indexer) watchSmart(ctx context.Context) error {
+	sw, err := newSmartWatcher(idx)
 	if err != nil {
-		return fmt.Errorf("creating watcher: %w", err)
+		return fmt.Errorf("creating smart watcher: %w", err)
 	}
-	defer watcher.Close()
-
-	// Add all directories
-	err = filepath.WalkDir(idx.cfg.Codebase.Path, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			for _, pattern := range idx.cfg.Codebase.ExcludePatterns {
-				trimmed := strings.TrimPrefix(pattern, "**/")
-				if matched, _ := filepath.Match(trimmed, filepath.Base(path)); matched {
-					return filepath.SkipDir
-				}
-			}
-			return watcher.Add(path)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("adding watch paths: %w", err)
-	}
-
-	idx.logger.Println("watching for file changes...")
-
-	for {
-		select {
-		case event, ok := <-watcher.Events:
-			if !ok {
-				return nil
-			}
-			if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
-				lang := idx.detectLanguage(event.Name)
-				if lang != "" {
-					idx.logger.Printf("file changed: %s", event.Name)
-					if _, _, err := idx.indexFile(ctx, event.Name); err != nil {
-						idx.logger.Printf("error re-indexing %s: %v", event.Name, err)
-					}
-				}
-			}
-			if event.Op&fsnotify.Remove != 0 {
-				relPath, _ := filepath.Rel(idx.cfg.Codebase.Path, event.Name)
-				idx.logger.Printf("file removed: %s", relPath)
-				if err := idx.store.DeleteFileData(ctx, idx.cfg.Codebase.Name, relPath); err != nil {
-					idx.logger.Printf("error cleaning up %s: %v", relPath, err)
-				}
-				if err := idx.qdrant.DeleteByFilter(ctx, idx.cfg.Codebase.Name, relPath); err != nil {
-					idx.logger.Printf("error deleting vectors for %s: %v", relPath, err)
-				}
-			}
-
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return nil
-			}
-			idx.logger.Printf("watcher error: %v", err)
-		}
-	}
+	defer sw.close()
+	return sw.run(ctx)
 }
 
 // resolveAndStoreRelationships resolves raw relationship names to symbol IDs and stores them.

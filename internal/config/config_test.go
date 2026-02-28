@@ -113,6 +113,12 @@ metadata_store:
 	if cfg.Vector.CollectionPrefix != "test" {
 		// It was explicitly set to empty string vs having a prefix
 	}
+	if cfg.Indexing.ConcurrentFiles != 4 {
+		t.Errorf("default concurrent_files should be 4, got %d", cfg.Indexing.ConcurrentFiles)
+	}
+	if cfg.Metrics.Port != 9090 {
+		t.Errorf("default metrics port should be 9090, got %d", cfg.Metrics.Port)
+	}
 }
 
 func TestValidation_MissingRequired(t *testing.T) {
