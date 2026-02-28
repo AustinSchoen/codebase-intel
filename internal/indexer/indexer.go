@@ -587,6 +587,11 @@ func langFamily(lang string) string {
 	}
 }
 
+// relPath returns the path relative to the codebase root.
+func (idx *Indexer) relPath(path string) (string, error) {
+	return filepath.Rel(idx.cfg.Codebase.Path, path)
+}
+
 // extractName gets the short name from a qualified name (e.g. "Foo.Bar" -> "Bar").
 func extractName(qualified string) string {
 	parts := strings.Split(qualified, ".")
