@@ -860,6 +860,46 @@ func (s *Store) GetModuleSymbolSummary(ctx context.Context, codebaseID, module s
 	return results, rows.Err()
 }
 
+// ImportantSymbol holds a symbol with its importance ranking.
+type ImportantSymbol struct {
+	Qualified    string
+	Kind         string
+	Module       string
+	Signature    string
+	IncomingRefs int
+}
+
+// GetTopSymbolsByImportance returns the most-referenced symbols from the symbol_importance view.
+func (s *Store) GetTopSymbolsByImportance(ctx context.Context, codebaseID string, limit int) ([]ImportantSymbol, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
+		SELECT si.qualified, si.kind, COALESCE(si.module, ''),
+			COALESCE(sym.signature, ''), COALESCE(si.incoming_refs, 0)
+		FROM symbol_importance si
+		LEFT JOIN symbols sym ON sym.id = si.id
+		WHERE si.codebase_id = $1 AND si.incoming_refs > 0
+		ORDER BY si.incoming_refs DESC
+		LIMIT %d
+	`, limit), codebaseID)
+	if err != nil {
+		return nil, fmt.Errorf("get top symbols: %w", err)
+	}
+	defer rows.Close()
+
+	var results []ImportantSymbol
+	for rows.Next() {
+		var sym ImportantSymbol
+		if err := rows.Scan(&sym.Qualified, &sym.Kind, &sym.Module, &sym.Signature, &sym.IncomingRefs); err != nil {
+			return nil, err
+		}
+		results = append(results, sym)
+	}
+	return results, rows.Err()
+}
+
 func nilIfEmpty(s string) interface{} {
 	if s == "" {
 		return nil

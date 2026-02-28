@@ -12,9 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AustinSchoen/codebase-intel/internal/claudemd"
 	"github.com/AustinSchoen/codebase-intel/internal/config"
 	"github.com/AustinSchoen/codebase-intel/internal/embedding"
 	"github.com/AustinSchoen/codebase-intel/internal/metrics"
+	"github.com/AustinSchoen/codebase-intel/internal/rerank"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/postgres"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/qdrant"
 	"github.com/AustinSchoen/codebase-intel/internal/summary"
@@ -49,6 +51,7 @@ type Server struct {
 	qdrant    *qdrant.Client
 	embedder  *embedding.VoyageClient
 	summarGen *summary.Generator
+	reranker  rerank.Reranker
 	logger    *log.Logger
 }
 
@@ -134,6 +137,12 @@ func (s *Server) initBackends(ctx context.Context) error {
 			s.cfg.Codebase.Name,
 			s.logger,
 		)
+	}
+
+	// Reranker
+	if s.cfg.Reranking.Enabled && env.CohereAPIKey != "" {
+		s.reranker = rerank.NewCohereReranker(env.CohereAPIKey, s.cfg.Reranking.Model)
+		s.logger.Println("Cohere reranker enabled")
 	}
 
 	return nil
@@ -274,6 +283,16 @@ func (s *Server) handleToolsList(req *jsonrpcRequest) *jsonrpcResponse {
 				"required": []string{"topic"},
 			},
 		},
+		{
+			"name":        "generate_claude_md",
+			"description": "Generate a CLAUDE.md file with project overview, key modules, important symbols, and file structure. Suitable for writing to CLAUDE.md to give Claude Code context about the codebase.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"top_symbols": map[string]interface{}{"type": "integer", "default": 20, "description": "Number of top symbols to include (by reference count)"},
+				},
+			},
+		},
 	}
 
 	return &jsonrpcResponse{
@@ -318,6 +337,8 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *json
 		result, err = s.toolGetModuleSummary(ctx, params.Arguments)
 	case "explain_subsystem":
 		result, err = s.toolExplainSubsystem(ctx, params.Arguments)
+	case "generate_claude_md":
+		result, err = s.toolGenerateClaudeMD(ctx, params.Arguments)
 	default:
 		return &jsonrpcResponse{
 			JSONRPC: "2.0",
@@ -391,6 +412,26 @@ func (s *Server) toolSearchCode(ctx context.Context, args json.RawMessage) (inte
 	results, err := s.qdrant.HybridSearch(ctx, s.cfg.Codebase.Name, searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
+	}
+
+	// Rerank results if enabled
+	if s.reranker != nil && len(results) > 1 {
+		var docs []string
+		for _, r := range results {
+			content, _ := r.Payload["content"].(string)
+			docs = append(docs, content)
+		}
+		reranked, err := s.reranker.Rerank(ctx, params.Query, docs, params.Limit)
+		if err != nil {
+			s.logger.Printf("warning: reranking failed, using original order: %v", err)
+		} else if len(reranked) > 0 {
+			reordered := make([]qdrant.SearchResult, len(reranked))
+			for i, rr := range reranked {
+				reordered[i] = results[rr.Index]
+				reordered[i].Score = rr.Score
+			}
+			results = reordered
+		}
 	}
 
 	type searchResult struct {
@@ -866,6 +907,29 @@ func (s *Server) toolExplainSubsystem(ctx context.Context, args json.RawMessage)
 		"key_classes":     keyClasses,
 		"related_modules": relatedModules,
 	}, nil
+}
+
+func (s *Server) toolGenerateClaudeMD(ctx context.Context, args json.RawMessage) (interface{}, error) {
+	var params struct {
+		TopSymbols int `json:"top_symbols"`
+	}
+	if args != nil {
+		json.Unmarshal(args, &params)
+	}
+	if params.TopSymbols <= 0 {
+		params.TopSymbols = 20
+	}
+
+	if s.store == nil {
+		return nil, fmt.Errorf("postgres not available")
+	}
+
+	content, err := claudemd.Generate(ctx, s.cfg.Codebase.Name, s.cfg.Codebase.Path, s.store, params.TopSymbols)
+	if err != nil {
+		return nil, fmt.Errorf("generate CLAUDE.md: %w", err)
+	}
+
+	return map[string]interface{}{"content": content}, nil
 }
 
 func (s *Server) writeResponse(resp *jsonrpcResponse) {

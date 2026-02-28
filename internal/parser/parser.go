@@ -6,8 +6,12 @@ import (
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/c"
+	"github.com/smacker/go-tree-sitter/cpp"
 	"github.com/smacker/go-tree-sitter/golang"
+	"github.com/smacker/go-tree-sitter/javascript"
 	"github.com/smacker/go-tree-sitter/python"
+	"github.com/smacker/go-tree-sitter/rust"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 )
 
@@ -46,7 +50,7 @@ type Parser struct {
 	languages map[string]*sitter.Language
 }
 
-// New creates a parser with Go, Python, and TypeScript grammars.
+// New creates a parser with grammars for Go, Python, TypeScript, JavaScript, Rust, C, and C++.
 func New() *Parser {
 	return &Parser{
 		languages: map[string]*sitter.Language{
@@ -55,6 +59,17 @@ func New() *Parser {
 			"python":     python.GetLanguage(),
 			"ts":         typescript.GetLanguage(),
 			"typescript": typescript.GetLanguage(),
+			"js":         javascript.GetLanguage(),
+			"javascript": javascript.GetLanguage(),
+			"jsx":        javascript.GetLanguage(),
+			"tsx":        typescript.GetLanguage(),
+			"rust":       rust.GetLanguage(),
+			"rs":         rust.GetLanguage(),
+			"c":          c.GetLanguage(),
+			"cpp":        cpp.GetLanguage(),
+			"cc":         cpp.GetLanguage(),
+			"h":          c.GetLanguage(),
+			"hpp":        cpp.GetLanguage(),
 		},
 	}
 }
@@ -93,8 +108,16 @@ func (p *Parser) ParseFile(ctx context.Context, filepath string, source []byte, 
 		p.extractGo(root, source, result)
 	case "py", "python":
 		p.extractPython(root, source, result)
-	case "ts", "typescript":
+	case "ts", "typescript", "tsx":
 		p.extractTypeScript(root, source, result)
+	case "js", "javascript", "jsx":
+		p.extractJavaScript(root, source, result)
+	case "rust", "rs":
+		p.extractRust(root, source, result)
+	case "c", "h":
+		p.extractC(root, source, result)
+	case "cpp", "cc", "hpp":
+		p.extractCpp(root, source, result)
 	}
 
 	return result, nil
