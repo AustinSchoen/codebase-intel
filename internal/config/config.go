@@ -18,6 +18,11 @@ type Config struct {
 	Summaries SummaryConfig   `yaml:"summaries"`
 	Metrics   MetricsConfig   `yaml:"metrics"`
 	Reranking RerankConfig    `yaml:"reranking"`
+	Server    ServerConfig    `yaml:"server"`
+}
+
+type ServerConfig struct {
+	APIKeyEnv string `yaml:"api_key_env"`
 }
 
 type RerankConfig struct {

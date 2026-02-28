@@ -12,6 +12,8 @@ import (
 
 func main() {
 	configFile := flag.String("config", "", "Path to config.yaml")
+	transport := flag.String("transport", "stdio", "Transport type: stdio or http")
+	addr := flag.String("addr", ":8090", "Listen address for HTTP transport")
 	flag.Parse()
 
 	var cfg *config.Config
@@ -37,8 +39,20 @@ func main() {
 	}
 
 	server := mcp.NewServer(cfg)
-	if err := server.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+
+	switch *transport {
+	case "stdio":
+		if err := server.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+			os.Exit(1)
+		}
+	case "http":
+		if err := server.RunHTTP(*addr); err != nil {
+			fmt.Fprintf(os.Stderr, "HTTP server error: %v\n", err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown transport: %s (use 'stdio' or 'http')\n", *transport)
 		os.Exit(1)
 	}
 }
