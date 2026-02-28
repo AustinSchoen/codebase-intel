@@ -17,6 +17,7 @@ import (
 	"github.com/AustinSchoen/codebase-intel/internal/parser"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/postgres"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/qdrant"
+	"github.com/AustinSchoen/codebase-intel/internal/summary"
 )
 
 // rawRelationship holds an unresolved relationship from parsing.
@@ -30,13 +31,14 @@ type rawRelationship struct {
 
 // Indexer walks a codebase, parses, chunks, embeds, and stores.
 type Indexer struct {
-	cfg      *config.Config
-	parser   *parser.Parser
-	chunker  *chunker.Chunker
-	embedder *embedding.VoyageClient
-	qdrant   *qdrant.Client
-	store    *postgres.Store
-	logger   *log.Logger
+	cfg       *config.Config
+	parser    *parser.Parser
+	chunker   *chunker.Chunker
+	embedder  *embedding.VoyageClient
+	qdrant    *qdrant.Client
+	store     *postgres.Store
+	summarGen *summary.Generator
+	logger    *log.Logger
 }
 
 // New creates an Indexer with all pipeline components.
@@ -53,7 +55,7 @@ func New(cfg *config.Config) (*Indexer, error) {
 		return nil, fmt.Errorf("connecting to postgres: %w", err)
 	}
 
-	return &Indexer{
+	idx := &Indexer{
 		cfg:     cfg,
 		parser:  parser.New(),
 		chunker: chunker.New(cfg.Indexing.ChunkMaxLines, cfg.Indexing.ChunkOverlapLines),
@@ -66,7 +68,20 @@ func New(cfg *config.Config) (*Indexer, error) {
 		qdrant: qdrant.NewClient(cfg.Vector.URL, cfg.Vector.CollectionPrefix, env.VectorAPIKey),
 		store:  store,
 		logger: log.New(os.Stderr, "[indexer] ", log.LstdFlags),
-	}, nil
+	}
+
+	// Initialize summary generator if enabled
+	if cfg.Summaries.Enabled && env.SummaryAPIKey != "" {
+		idx.summarGen = summary.NewGenerator(
+			env.SummaryAPIKey,
+			cfg.Summaries.Model,
+			store,
+			cfg.Codebase.Name,
+			idx.logger,
+		)
+	}
+
+	return idx, nil
 }
 
 // Run performs a full index then watches for changes.
@@ -190,6 +205,25 @@ func (idx *Indexer) fullIndex(ctx context.Context) error {
 	// Refresh materialized views
 	if err := idx.store.RefreshMaterializedViews(ctx); err != nil {
 		idx.logger.Printf("warning: refresh materialized views: %v", err)
+	}
+
+	// Generate summaries for changed modules
+	if idx.summarGen != nil && indexed > 0 {
+		changedModules := make(map[string]bool)
+		for _, rels := range allRawRels {
+			if rels.Filepath != "" {
+				parts := strings.SplitN(rels.Filepath, "/", 2)
+				if len(parts) > 0 {
+					changedModules[parts[0]] = true
+				}
+			}
+		}
+		if len(changedModules) > 0 {
+			idx.logger.Printf("generating summaries for %d changed modules", len(changedModules))
+			if err := idx.summarGen.GenerateModuleSummaries(ctx, changedModules); err != nil {
+				idx.logger.Printf("warning: generating summaries: %v", err)
+			}
+		}
 	}
 
 	return nil

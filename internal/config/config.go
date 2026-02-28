@@ -124,6 +124,12 @@ func (c *Config) applyDefaults() {
 	if c.Summaries.TopClasses == 0 {
 		c.Summaries.TopClasses = 1000
 	}
+	if c.Summaries.Model == "" {
+		c.Summaries.Model = "claude-sonnet-4-5-20250929"
+	}
+	if c.Summaries.APIKeyEnv == "" {
+		c.Summaries.APIKeyEnv = "ANTHROPIC_API_KEY"
+	}
 	if c.Vector.CollectionPrefix == "" {
 		c.Vector.CollectionPrefix = "codebase"
 	}
