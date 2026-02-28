@@ -899,3 +899,27 @@ ue_extensions:
   - Context window savings (tokens served via MCP vs raw file reads)
   - Re-search rate (agent searches again immediately = failed retrieval)
   - Click-through rank (which result rank does the agent actually use?)
+
+### Architecture Review: Gemini 3.1 Pro Feedback (2026-02-28)
+
+**Adopted — Address These Gaps:**
+
+- [ ] **Garbage collection for deleted/renamed code** — Index currently retains phantom symbols from deleted files. Need a sweep/tombstone process: on each index run, diff the set of known files against what's on disk (or in git), and purge symbols/chunks/relationships for files that no longer exist. Consider a soft-delete with TTL before hard purge.
+
+- [ ] **AST-aware summary invalidation** — Currently summaries re-generate whenever source files change. Should hash the structural AST (ignoring whitespace, comments, logging changes) and skip re-generation when only non-semantic content changed. This saves significant LLM costs at scale.
+
+- [ ] **Branch switching strategy** — Raw fsnotify floods the watcher on branch switches (potentially thousands of events in seconds). Replace with `git diff` polling + batched event queue. Detection heuristic: if >500 file change events arrive within 60 seconds, assume branch switch — pause live indexing, wait for disk to settle, then do a bulk differential sync against the new HEAD.
+
+- [ ] **CGO tree-sitter bindings** — Use the C bindings wrapper (`github.com/smacker/go-tree-sitter` already uses CGO) rather than pure Go ports. UE's C++ edge cases (complex macros, template metaprogramming, nested preprocessor directives) will break unmaintained pure Go grammars. Verify current dep is using CGO path.
+
+**Adopted — Recommendations:**
+
+- [x] **Use Sonnet for summary generation** — 95% quality at a fraction of Opus cost. Already configured as default (`claude-sonnet-4-5-20250929` in config). Reserve Opus for complex subsystem narratives only if Sonnet proves insufficient.
+
+- [ ] **Cohere Rerank or cross-encoder for Phase 4** — Instead of (or alongside) LLM reranking, evaluate Cohere Rerank API or a local cross-encoder model. Faster, cheaper, and purpose-built for relevance re-scoring. LLM reranking remains an option for complex multi-hop queries where cross-encoders struggle.
+
+**Rejected — With Rationale:**
+
+- **"Drop Qdrant for pgvector"** — Qdrant's native hybrid search (dense + sparse BM25 + RRF fusion) is purpose-built for this use case. pgvector can do vectors but bolting on FTS fusion + payload filtering gets messy and requires custom ranking logic in application code. The dual-write concern (Qdrant + Postgres) is valid but solvable with a reconciliation pass during garbage collection.
+
+- **"Local embedding fallback (ONNX)"** — Scope creep for v1. The tool already requires internet connectivity for the LLM agent that consumes it. Voyage API latency is acceptable for indexing workloads. Revisit if offline/air-gapped use becomes a requirement.
