@@ -45,6 +45,7 @@ type VectorConfig struct {
 	Provider         string `yaml:"provider"`
 	URL              string `yaml:"url"`
 	CollectionPrefix string `yaml:"collection_prefix"`
+	APIKeyEnv        string `yaml:"api_key_env"`
 }
 
 type MetadataConfig struct {
@@ -126,6 +127,9 @@ func (c *Config) applyDefaults() {
 	if c.Vector.CollectionPrefix == "" {
 		c.Vector.CollectionPrefix = "codebase"
 	}
+	if c.Vector.APIKeyEnv == "" {
+		c.Vector.APIKeyEnv = "QDRANT_API_KEY"
+	}
 }
 
 // Validate checks that required fields are present and values are sane.
@@ -180,6 +184,7 @@ func (c *Config) Validate() error {
 // ResolvedEnv holds the actual values from environment variables.
 type ResolvedEnv struct {
 	EmbeddingAPIKey string
+	VectorAPIKey    string
 	PGUser          string
 	PGPassword      string
 	SummaryAPIKey   string
@@ -193,6 +198,11 @@ func (c *Config) ResolveEnv() (ResolvedEnv, error) {
 	env.EmbeddingAPIKey = os.Getenv(c.Embedding.APIKeyEnv)
 	if env.EmbeddingAPIKey == "" {
 		errs = append(errs, fmt.Sprintf("env var %s not set (embeddings.api_key_env)", c.Embedding.APIKeyEnv))
+	}
+
+	// Vector store API key (optional)
+	if c.Vector.APIKeyEnv != "" {
+		env.VectorAPIKey = os.Getenv(c.Vector.APIKeyEnv)
 	}
 
 	if c.Metadata.UserEnv != "" {

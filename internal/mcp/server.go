@@ -109,7 +109,7 @@ func (s *Server) initBackends(ctx context.Context) error {
 	}
 
 	// Qdrant
-	s.qdrant = qdrant.NewClient(s.cfg.Vector.URL, s.cfg.Vector.CollectionPrefix)
+	s.qdrant = qdrant.NewClient(s.cfg.Vector.URL, s.cfg.Vector.CollectionPrefix, env.VectorAPIKey)
 
 	// Embedder
 	s.embedder = embedding.NewVoyageClient(
