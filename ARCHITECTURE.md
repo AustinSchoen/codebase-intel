@@ -882,3 +882,20 @@ ue_extensions:
 7. **Qdrant deployment?** Single-node Docker on the same LAN as Postgres, or colocated on one of your Rocky Linux servers? For UE-scale (~500K-800K vectors at 1024 dimensions), a single node with 4-8GB RAM dedicated to Qdrant is plenty. Docker compose with persistent volume is the simplest path.
 
 8. **Go database driver?** `pgx` (jackc/pgx) is the standard for Go + Postgres. It supports connection pooling (`pgxpool`), COPY for bulk inserts during indexing, and native JSONB handling. The bulk insert path matters — during initial indexing you'll be inserting hundreds of thousands of symbols and relationships.
+
+### Phase 4 Additions: Observability + Effectiveness Measurement
+
+- [ ] Metrics layer in MCP server — log every tool call (query, result count, latency, result IDs) to Postgres `tool_calls` table
+- [ ] Prometheus exporter endpoint (`/metrics`) on a separate HTTP port
+  - Counters: calls by tool, empty result rate, re-search rate
+  - Histograms: latency per tool (p50/p95/p99)
+  - Gauges: index size (total chunks, symbols, relationships)
+- [ ] Grafana dashboard — calls/min, latency, empty results, re-search patterns
+- [ ] Known-answer benchmark suite (20-30 queries with expected results)
+  - Cron job runs weekly, logs precision@5 scores
+  - Compare retrieval quality over time as index/chunking evolves
+- [ ] Retrieval relevance scoring — feed query + top-5 to Haiku, rate 1-5, aggregate
+- [ ] Agent impact tracking:
+  - Context window savings (tokens served via MCP vs raw file reads)
+  - Re-search rate (agent searches again immediately = failed retrieval)
+  - Click-through rank (which result rank does the agent actually use?)
