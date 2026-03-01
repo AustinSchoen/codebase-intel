@@ -587,8 +587,14 @@ func (s *Store) GetClassHierarchy(ctx context.Context, codebaseID, className, di
 			WHERE s.codebase_id = $1
 				AND (s.qualified %% $2 OR s.name = $2)
 				AND s.kind IN ('class', 'struct')
-			ORDER BY similarity(s.qualified, $2) DESC
-			LIMIT 1
+				AND s.id = (
+					SELECT s2.id FROM symbols s2
+					WHERE s2.codebase_id = $1
+						AND (s2.qualified %% $2 OR s2.name = $2)
+						AND s2.kind IN ('class', 'struct')
+					ORDER BY similarity(s2.qualified, $2) DESC
+					LIMIT 1
+				)
 
 			UNION ALL
 
