@@ -4,14 +4,16 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
-// extractC extracts symbols from a C AST.
+// extractC extracts symbols and relationships from a C AST.
 func (p *Parser) extractC(root *sitter.Node, source []byte, result *ParseResult) {
 	p.walkC(root, source, result)
+	p.extractCRelationships(root, source, result)
 }
 
-// extractCpp extracts symbols from a C++ AST.
+// extractCpp extracts symbols and relationships from a C++ AST.
 func (p *Parser) extractCpp(root *sitter.Node, source []byte, result *ParseResult) {
 	p.walkCpp(root, source, result, "")
+	p.extractCppRelationships(root, source, result)
 }
 
 func (p *Parser) walkC(node *sitter.Node, source []byte, result *ParseResult) {
