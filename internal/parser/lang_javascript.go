@@ -4,10 +4,11 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
-// extractJavaScript extracts symbols from a JavaScript AST.
+// extractJavaScript extracts symbols and relationships from a JavaScript AST.
 // This handles .js and .jsx files. TypeScript (.ts/.tsx) uses the existing extractTypeScript.
 func (p *Parser) extractJavaScript(root *sitter.Node, source []byte, result *ParseResult) {
 	p.walkJS(root, source, result, "")
+	p.extractJSRelationships(root, source, result)
 }
 
 func (p *Parser) walkJS(node *sitter.Node, source []byte, result *ParseResult, parentClass string) {

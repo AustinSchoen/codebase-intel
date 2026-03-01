@@ -6,9 +6,10 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
-// extractKotlin extracts symbols from a Kotlin AST.
+// extractKotlin extracts symbols and relationships from a Kotlin AST.
 func (p *Parser) extractKotlin(root *sitter.Node, source []byte, result *ParseResult) {
 	p.walkKotlin(root, source, result, "")
+	p.extractKotlinRelationships(root, source, result)
 }
 
 func (p *Parser) walkKotlin(node *sitter.Node, source []byte, result *ParseResult, parentName string) {

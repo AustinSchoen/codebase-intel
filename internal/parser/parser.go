@@ -282,6 +282,9 @@ func (p *Parser) extractPython(root *sitter.Node, source []byte, result *ParseRe
 			}
 		}
 	}
+
+	// Phase 2: extract relationships (imports, calls, inheritance, type references)
+	p.extractPythonRelationships(root, source, result)
 }
 
 func (p *Parser) pythonFunction(node *sitter.Node, source []byte, parentClass string) Symbol {
@@ -346,9 +349,10 @@ func (p *Parser) pythonClass(node *sitter.Node, source []byte) []Symbol {
 	return syms
 }
 
-// extractTypeScript extracts symbols from a TypeScript AST.
+// extractTypeScript extracts symbols and relationships from a TypeScript AST.
 func (p *Parser) extractTypeScript(root *sitter.Node, source []byte, result *ParseResult) {
 	p.walkTS(root, source, result, "")
+	p.extractTSRelationships(root, source, result)
 }
 
 func (p *Parser) walkTS(node *sitter.Node, source []byte, result *ParseResult, parentClass string) {

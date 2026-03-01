@@ -4,9 +4,10 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
-// extractRust extracts symbols from a Rust AST.
+// extractRust extracts symbols and relationships from a Rust AST.
 func (p *Parser) extractRust(root *sitter.Node, source []byte, result *ParseResult) {
 	p.walkRust(root, source, result, "")
+	p.extractRustRelationships(root, source, result)
 }
 
 func (p *Parser) walkRust(node *sitter.Node, source []byte, result *ParseResult, parentName string) {
