@@ -4,9 +4,10 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
-// extractSwift extracts symbols from a Swift AST.
+// extractSwift extracts symbols and relationships from a Swift AST.
 func (p *Parser) extractSwift(root *sitter.Node, source []byte, result *ParseResult) {
 	p.walkSwift(root, source, result, "")
+	p.extractSwiftRelationships(root, source, result)
 }
 
 func (p *Parser) walkSwift(node *sitter.Node, source []byte, result *ParseResult, parentName string) {
