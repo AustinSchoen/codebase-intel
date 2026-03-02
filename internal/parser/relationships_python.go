@@ -7,31 +7,23 @@ import (
 // extractPythonRelationships walks the Python AST to find imports, function calls,
 // class inheritance, and type references.
 func (p *Parser) extractPythonRelationships(root *sitter.Node, source []byte, result *ParseResult) {
-	p.walkPythonForRefs(root, source, result)
+	walkTree(root, source, result, func(node *sitter.Node, source []byte, result *ParseResult) {
+		switch node.Type() {
+		case "import_statement":
+			p.extractPythonImport(node, source, result)
+		case "import_from_statement":
+			p.extractPythonFromImport(node, source, result)
+		case "call":
+			p.extractPythonCall(node, source, result)
+		case "class_definition":
+			p.extractPythonInheritance(node, source, result)
+		case "type":
+			p.extractPythonTypeRef(node, source, result)
+		}
+	})
 }
 
-func (p *Parser) walkPythonForRefs(node *sitter.Node, source []byte, result *ParseResult) {
-	switch node.Type() {
-	case "import_statement":
-		p.extractPythonImport(node, source, result)
-	case "import_from_statement":
-		p.extractPythonFromImport(node, source, result)
-	case "call":
-		p.extractPythonCall(node, source, result)
-	case "class_definition":
-		p.extractPythonInheritance(node, source, result)
-	case "type":
-		p.extractPythonTypeRef(node, source, result)
-	}
-
-	for i := 0; i < int(node.ChildCount()); i++ {
-		p.walkPythonForRefs(node.Child(i), source, result)
-	}
-}
-
-// extractPythonImport handles `import foo` and `import foo.bar` statements.
 func (p *Parser) extractPythonImport(node *sitter.Node, source []byte, result *ParseResult) {
-	line := int(node.StartPoint().Row) + 1
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
 		var name string
@@ -45,21 +37,14 @@ func (p *Parser) extractPythonImport(node *sitter.Node, source []byte, result *P
 			}
 		}
 		if name != "" {
-			result.Relationships = append(result.Relationships, Relationship{
-				SourceQualified: result.Filepath,
-				TargetName:      name,
-				Kind:            "references",
-				Line:            line,
-			})
+			emitImportRelationship(node, name, result)
 		}
 	}
 }
 
-// extractPythonFromImport handles `from foo import bar` statements.
 func (p *Parser) extractPythonFromImport(node *sitter.Node, source []byte, result *ParseResult) {
 	moduleNode := node.ChildByFieldName("module_name")
 	if moduleNode == nil {
-		// Fallback: look for dotted_name or relative_import child
 		for i := 0; i < int(node.ChildCount()); i++ {
 			child := node.Child(i)
 			if child.Type() == "dotted_name" || child.Type() == "relative_import" {
@@ -68,66 +53,17 @@ func (p *Parser) extractPythonFromImport(node *sitter.Node, source []byte, resul
 			}
 		}
 	}
-	if moduleNode == nil {
-		return
+	if moduleNode != nil {
+		emitImportRelationship(node, moduleNode.Content(source), result)
 	}
-
-	moduleName := moduleNode.Content(source)
-	if moduleName == "" {
-		return
-	}
-
-	line := int(node.StartPoint().Row) + 1
-	result.Relationships = append(result.Relationships, Relationship{
-		SourceQualified: result.Filepath,
-		TargetName:      moduleName,
-		Kind:            "references",
-		Line:            line,
-	})
 }
 
-// extractPythonCall extracts function/method calls as "calls" relationships.
 func (p *Parser) extractPythonCall(node *sitter.Node, source []byte, result *ParseResult) {
 	funcNode := node.ChildByFieldName("function")
-	if funcNode == nil {
-		return
-	}
-
-	var callee string
-	switch funcNode.Type() {
-	case "identifier":
-		callee = funcNode.Content(source)
-	case "attribute":
-		attrNode := funcNode.ChildByFieldName("attribute")
-		if attrNode != nil {
-			objNode := funcNode.ChildByFieldName("object")
-			if objNode != nil && objNode.Type() == "identifier" {
-				callee = objNode.Content(source) + "." + attrNode.Content(source)
-			} else {
-				callee = attrNode.Content(source)
-			}
-		}
-	}
-
-	if callee == "" || pythonBuiltinFuncs[callee] {
-		return
-	}
-
-	line := int(node.StartPoint().Row) + 1
-	enclosing := findEnclosingSymbol(line, result.Symbols)
-	if enclosing == "" {
-		return
-	}
-
-	result.Relationships = append(result.Relationships, Relationship{
-		SourceQualified: enclosing,
-		TargetName:      callee,
-		Kind:            "calls",
-		Line:            line,
-	})
+	callee := extractCalleeFromFieldName(funcNode, source, "attribute", "object", "attribute")
+	emitCallRelationship(node, callee, pythonBuiltinFuncs, result)
 }
 
-// extractPythonInheritance extracts class inheritance from superclasses.
 func (p *Parser) extractPythonInheritance(node *sitter.Node, source []byte, result *ParseResult) {
 	nameNode := node.ChildByFieldName("name")
 	if nameNode == nil {
@@ -144,52 +80,21 @@ func (p *Parser) extractPythonInheritance(node *sitter.Node, source []byte, resu
 		child := superclasses.Child(i)
 		var baseName string
 		switch child.Type() {
-		case "identifier":
-			baseName = child.Content(source)
-		case "attribute":
+		case "identifier", "attribute":
 			baseName = child.Content(source)
 		case "keyword_argument":
-			// metaclass=ABCMeta etc. — skip
 			continue
 		}
-		if baseName == "" || pythonBuiltinTypes[baseName] {
-			continue
-		}
-
-		line := int(child.StartPoint().Row) + 1
-		result.Relationships = append(result.Relationships, Relationship{
-			SourceQualified: className,
-			TargetName:      baseName,
-			Kind:            "inherits",
-			Line:            line,
-		})
+		emitInheritsRelationship(child, className, baseName, pythonBuiltinTypes, result)
 	}
 }
 
-// extractPythonTypeRef captures type annotations as "references" relationships.
 func (p *Parser) extractPythonTypeRef(node *sitter.Node, source []byte, result *ParseResult) {
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
-		if child.Type() != "identifier" {
-			continue
+		if child.Type() == "identifier" {
+			emitTypeRefRelationship(child, child.Content(source), pythonBuiltinTypes, result)
 		}
-		typeName := child.Content(source)
-		if typeName == "" || pythonBuiltinTypes[typeName] {
-			continue
-		}
-
-		line := int(child.StartPoint().Row) + 1
-		enclosing := findEnclosingSymbol(line, result.Symbols)
-		if enclosing == "" || enclosing == typeName {
-			continue
-		}
-
-		result.Relationships = append(result.Relationships, Relationship{
-			SourceQualified: enclosing,
-			TargetName:      typeName,
-			Kind:            "references",
-			Line:            line,
-		})
 	}
 }
 
@@ -215,7 +120,6 @@ var pythonBuiltinTypes = map[string]bool{
 	"list": true, "dict": true, "set": true, "tuple": true, "frozenset": true,
 	"None": true, "object": true, "type": true,
 	"complex": true, "range": true, "memoryview": true,
-	// typing module common types
 	"Any": true, "Optional": true, "Union": true, "List": true, "Dict": true,
 	"Set": true, "Tuple": true, "Sequence": true, "Mapping": true, "Iterable": true,
 	"Iterator": true, "Generator": true, "Callable": true, "Type": true,
