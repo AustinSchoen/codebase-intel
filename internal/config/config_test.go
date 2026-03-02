@@ -365,3 +365,325 @@ metadata_store:
 		t.Errorf("expected codebase.path error, got %q", err.Error())
 	}
 }
+
+// --- Additional edge case tests ---
+
+func TestLoadFromFile_InvalidYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("{{{{invalid yaml!!!!"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFromFile(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+	if !strings.Contains(err.Error(), "parsing config") {
+		t.Errorf("expected parsing config error, got %q", err.Error())
+	}
+}
+
+func TestLoadFromFile_NonexistentFile(t *testing.T) {
+	_, err := LoadFromFile("/nonexistent/path/config.yaml")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "reading config") {
+		t.Errorf("expected reading config error, got %q", err.Error())
+	}
+}
+
+func TestValidation_ChunkOverlapExceedsMax(t *testing.T) {
+	yaml := `
+codebase:
+  path: /tmp
+  name: test
+  languages: [go]
+indexing:
+  chunk_max_lines: 50
+  chunk_overlap_lines: 50
+vector_store:
+  url: http://localhost
+metadata_store:
+  host: localhost
+  database: db
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFromFile(cfgPath)
+	if err == nil {
+		t.Fatal("expected error when overlap >= max lines")
+	}
+	if !strings.Contains(err.Error(), "chunk_overlap_lines") {
+		t.Errorf("expected chunk_overlap_lines error, got %q", err.Error())
+	}
+}
+
+func TestValidation_ConcurrentRequestsTooHigh(t *testing.T) {
+	yaml := `
+codebase:
+  path: /tmp
+  name: test
+  languages: [go]
+indexing:
+  concurrent_requests: 100
+vector_store:
+  url: http://localhost
+metadata_store:
+  host: localhost
+  database: db
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFromFile(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for concurrent_requests > 50")
+	}
+	if !strings.Contains(err.Error(), "concurrent_requests") {
+		t.Errorf("expected concurrent_requests error, got %q", err.Error())
+	}
+}
+
+func TestValidation_ChunkMaxLinesTooSmall(t *testing.T) {
+	yaml := `
+codebase:
+  path: /tmp
+  name: test
+  languages: [go]
+indexing:
+  chunk_max_lines: 5
+vector_store:
+  url: http://localhost
+metadata_store:
+  host: localhost
+  database: db
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFromFile(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for chunk_max_lines < 10")
+	}
+	if !strings.Contains(err.Error(), "chunk_max_lines") {
+		t.Errorf("expected chunk_max_lines error, got %q", err.Error())
+	}
+}
+
+func TestValidation_MultipleErrors(t *testing.T) {
+	yaml := `
+indexing:
+  batch_size: 1
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFromFile(cfgPath)
+	if err == nil {
+		t.Fatal("expected validation errors")
+	}
+	errText := err.Error()
+	if !strings.Contains(errText, "codebase.path") {
+		t.Errorf("expected codebase.path error in %q", errText)
+	}
+	if !strings.Contains(errText, "vector_store.url") {
+		t.Errorf("expected vector_store.url error in %q", errText)
+	}
+}
+
+func TestApplyDefaults_AllFields(t *testing.T) {
+	cfg := &Config{}
+	cfg.applyDefaults()
+
+	if cfg.Embedding.APIKeyEnv != "VOYAGE_API_KEY" {
+		t.Errorf("expected default api_key_env=VOYAGE_API_KEY, got %s", cfg.Embedding.APIKeyEnv)
+	}
+	if cfg.Vector.CollectionPrefix != "codebase" {
+		t.Errorf("expected default collection_prefix=codebase, got %s", cfg.Vector.CollectionPrefix)
+	}
+	if cfg.Vector.APIKeyEnv != "QDRANT_API_KEY" {
+		t.Errorf("expected default vector api_key_env=QDRANT_API_KEY, got %s", cfg.Vector.APIKeyEnv)
+	}
+	if cfg.Summaries.TopClasses != 1000 {
+		t.Errorf("expected default top_classes=1000, got %d", cfg.Summaries.TopClasses)
+	}
+	if cfg.Summaries.APIKeyEnv != "ANTHROPIC_API_KEY" {
+		t.Errorf("expected default summary api_key_env=ANTHROPIC_API_KEY, got %s", cfg.Summaries.APIKeyEnv)
+	}
+	if cfg.Reranking.APIKeyEnv != "COHERE_API_KEY" {
+		t.Errorf("expected default reranking api_key_env=COHERE_API_KEY, got %s", cfg.Reranking.APIKeyEnv)
+	}
+	if cfg.Reranking.Model != "rerank-v3.5" {
+		t.Errorf("expected default reranking model=rerank-v3.5, got %s", cfg.Reranking.Model)
+	}
+	if cfg.Reranking.Provider != "cohere" {
+		t.Errorf("expected default reranking provider=cohere, got %s", cfg.Reranking.Provider)
+	}
+}
+
+func TestResolveEnv_OptionalFields(t *testing.T) {
+	cfg := &Config{
+		Embedding: EmbeddingConfig{APIKeyEnv: "TEST_EMBED_KEY"},
+		Vector:    VectorConfig{APIKeyEnv: "TEST_VECTOR_KEY"},
+	}
+	t.Setenv("TEST_EMBED_KEY", "embed-key")
+
+	env, err := cfg.ResolveEnv()
+	if err != nil {
+		t.Fatalf("expected no error for optional vector API key, got: %v", err)
+	}
+	if env.EmbeddingAPIKey != "embed-key" {
+		t.Errorf("expected embed-key, got %s", env.EmbeddingAPIKey)
+	}
+	if env.VectorAPIKey != "" {
+		t.Errorf("expected empty vector API key, got %s", env.VectorAPIKey)
+	}
+}
+
+func TestResolveEnv_SummaryAndReranking(t *testing.T) {
+	cfg := &Config{
+		Embedding: EmbeddingConfig{APIKeyEnv: "TEST_EMB"},
+		Summaries: SummaryConfig{Enabled: true, APIKeyEnv: "TEST_SUMMARY_KEY"},
+		Reranking: RerankConfig{Enabled: true, APIKeyEnv: "TEST_COHERE_KEY"},
+	}
+	t.Setenv("TEST_EMB", "emb")
+	t.Setenv("TEST_SUMMARY_KEY", "summary-key")
+	t.Setenv("TEST_COHERE_KEY", "cohere-key")
+
+	env, err := cfg.ResolveEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.SummaryAPIKey != "summary-key" {
+		t.Errorf("expected summary-key, got %s", env.SummaryAPIKey)
+	}
+	if env.CohereAPIKey != "cohere-key" {
+		t.Errorf("expected cohere-key, got %s", env.CohereAPIKey)
+	}
+}
+
+func TestResolveEnv_DisabledSummaryAndReranking(t *testing.T) {
+	cfg := &Config{
+		Embedding: EmbeddingConfig{APIKeyEnv: "TEST_EMB2"},
+		Summaries: SummaryConfig{Enabled: false, APIKeyEnv: "TEST_SUM"},
+		Reranking: RerankConfig{Enabled: false, APIKeyEnv: "TEST_COH"},
+	}
+	t.Setenv("TEST_EMB2", "emb")
+
+	env, err := cfg.ResolveEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.SummaryAPIKey != "" {
+		t.Errorf("expected empty summary key when disabled, got %s", env.SummaryAPIKey)
+	}
+	if env.CohereAPIKey != "" {
+		t.Errorf("expected empty cohere key when disabled, got %s", env.CohereAPIKey)
+	}
+}
+
+func TestPostgresDSN_SpecialChars(t *testing.T) {
+	cfg := &Config{
+		Metadata: MetadataConfig{Host: "db.example.com", Port: 5433, Database: "my_db"},
+	}
+	env := ResolvedEnv{PGUser: "admin", PGPassword: "p@ss!"}
+	dsn := cfg.PostgresDSN(env)
+	expected := "postgres://admin:p@ss!@db.example.com:5433/my_db?sslmode=disable"
+	if dsn != expected {
+		t.Errorf("expected %s, got %s", expected, dsn)
+	}
+}
+
+func TestLoadFromFileForServer_EmptyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFromFileForServer(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty config (missing required store configs)")
+	}
+}
+
+func TestValidateForServer_ValidMinimalConfig(t *testing.T) {
+	cfg := &Config{
+		Vector:   VectorConfig{URL: "http://localhost:6333"},
+		Metadata: MetadataConfig{Host: "localhost", Database: "testdb"},
+	}
+	if err := cfg.ValidateForServer(); err != nil {
+		t.Fatalf("expected no error for valid minimal server config, got: %v", err)
+	}
+}
+
+func TestLoad_UsesEnvVar(t *testing.T) {
+	content := `
+codebase:
+  path: /tmp
+  name: test
+  languages: [go]
+vector_store:
+  url: http://localhost:6333
+metadata_store:
+  host: localhost
+  database: testdb
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CODEBASE_INTEL_CONFIG", cfgPath)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Codebase.Name != "test" {
+		t.Errorf("expected name=test, got %s", cfg.Codebase.Name)
+	}
+}
+
+func TestValidate_PathResolvesToAbsolute(t *testing.T) {
+	content := `
+codebase:
+  path: "./relative/path"
+  name: test
+  languages: [go]
+vector_store:
+  url: http://localhost:6333
+metadata_store:
+  host: localhost
+  database: testdb
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFromFile(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile failed: %v", err)
+	}
+
+	if !filepath.IsAbs(cfg.Codebase.Path) {
+		t.Errorf("expected absolute path, got %s", cfg.Codebase.Path)
+	}
+}
