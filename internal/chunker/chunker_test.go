@@ -247,3 +247,308 @@ func TestChunkID_Deterministic(t *testing.T) {
 		t.Error("different inputs should produce different ID")
 	}
 }
+
+// --- Additional edge case tests ---
+
+func TestNew_Defaults(t *testing.T) {
+	// Zero/negative values should get defaults
+	c := New(0, 0)
+	if c.maxLines != 200 {
+		t.Errorf("expected default maxLines=200, got %d", c.maxLines)
+	}
+	if c.overlapLines != 20 {
+		t.Errorf("expected default overlapLines=20, got %d", c.overlapLines)
+	}
+
+	c2 := New(-5, -10)
+	if c2.maxLines != 200 {
+		t.Errorf("expected default maxLines=200 for negative, got %d", c2.maxLines)
+	}
+}
+
+func TestChunkFile_SymbolWithNoContent(t *testing.T) {
+	c := New(200, 20)
+	result := &parser.ParseResult{
+		Filepath: "empty.go",
+		Language: "go",
+		Symbols: []parser.Symbol{
+			{
+				Name:      "Empty",
+				Qualified: "Empty",
+				Kind:      "function",
+				Content:   "",
+				Language:  "go",
+				LineStart: 1,
+				LineEnd:   1,
+			},
+		},
+	}
+
+	chunks := c.ChunkFile(result)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk even for empty content, got %d", len(chunks))
+	}
+	if chunks[0].Content != "" {
+		t.Errorf("expected empty content, got %q", chunks[0].Content)
+	}
+}
+
+func TestChunkFile_MaxLinesExactBoundary(t *testing.T) {
+	// Symbol with exactly maxLines lines → should be 1 chunk (no split)
+	c := New(10, 3)
+
+	var lines []string
+	for i := 0; i < 10; i++ {
+		lines = append(lines, "line")
+	}
+	content := strings.Join(lines, "\n")
+
+	result := &parser.ParseResult{
+		Filepath: "exact.go",
+		Language: "go",
+		Symbols: []parser.Symbol{
+			{
+				Name:      "ExactFunc",
+				Qualified: "ExactFunc",
+				Kind:      "function",
+				Content:   content,
+				Language:  "go",
+				LineStart: 1,
+				LineEnd:   10,
+			},
+		},
+	}
+
+	chunks := c.ChunkFile(result)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk for exactly maxLines lines, got %d", len(chunks))
+	}
+}
+
+func TestChunkFile_MaxLinesPlusOne(t *testing.T) {
+	// Symbol with maxLines+1 lines → should split into 2 chunks
+	c := New(10, 3)
+
+	var lines []string
+	for i := 0; i < 11; i++ {
+		lines = append(lines, "line")
+	}
+	content := strings.Join(lines, "\n")
+
+	result := &parser.ParseResult{
+		Filepath: "split.go",
+		Language: "go",
+		Symbols: []parser.Symbol{
+			{
+				Name:      "SplitFunc",
+				Qualified: "SplitFunc",
+				Kind:      "function",
+				Content:   content,
+				Language:  "go",
+				LineStart: 1,
+				LineEnd:   11,
+			},
+		},
+	}
+
+	chunks := c.ChunkFile(result)
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 chunks for maxLines+1 lines, got %d", len(chunks))
+	}
+}
+
+func TestChunkFile_OverlapContent(t *testing.T) {
+	// Verify overlap: with maxLines=5, overlapLines=2, stride=3
+	// First chunk: lines 0-4, second: lines 3-7, etc.
+	c := New(5, 2)
+
+	lines := []string{"L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7"}
+	content := strings.Join(lines, "\n")
+
+	result := &parser.ParseResult{
+		Filepath: "overlap.go",
+		Language: "go",
+		Symbols: []parser.Symbol{
+			{
+				Name:      "OverlapFunc",
+				Qualified: "OverlapFunc",
+				Kind:      "function",
+				Content:   content,
+				Language:  "go",
+				LineStart: 1,
+				LineEnd:   8,
+			},
+		},
+	}
+
+	chunks := c.ChunkFile(result)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+
+	// First chunk should contain L0-L4
+	if !strings.Contains(chunks[0].Content, "L0") {
+		t.Error("first chunk should start with L0")
+	}
+	if !strings.Contains(chunks[0].Content, "L4") {
+		t.Error("first chunk should include L4")
+	}
+
+	// Second chunk should contain L3 (overlap)
+	if !strings.Contains(chunks[1].Content, "L3") {
+		t.Error("second chunk should contain overlapping line L3")
+	}
+}
+
+func TestChunkFile_LanguagePreserved(t *testing.T) {
+	c := New(200, 20)
+	result := &parser.ParseResult{
+		Filepath: "test.py",
+		Language: "python",
+		Symbols: []parser.Symbol{
+			{
+				Name:      "hello",
+				Qualified: "hello",
+				Kind:      "function",
+				Content:   "def hello(): pass",
+				Language:  "python",
+				LineStart: 1,
+				LineEnd:   1,
+			},
+		},
+	}
+
+	chunks := c.ChunkFile(result)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	if chunks[0].Language != "python" {
+		t.Errorf("expected language=python, got %s", chunks[0].Language)
+	}
+}
+
+func TestChunkFile_ModuleInference(t *testing.T) {
+	c := New(200, 20)
+	result := &parser.ParseResult{
+		Filepath: "src/controllers/auth.go",
+		Language: "go",
+		Symbols: []parser.Symbol{
+			{
+				Name:      "Login",
+				Qualified: "Login",
+				Kind:      "function",
+				Content:   "func Login() {}",
+				Language:  "go",
+				LineStart: 1,
+				LineEnd:   1,
+			},
+		},
+	}
+
+	chunks := c.ChunkFile(result)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	if chunks[0].Module != "controllers" {
+		t.Errorf("expected module=controllers, got %s", chunks[0].Module)
+	}
+}
+
+func TestEstimateTokens_EdgeCases(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect int
+	}{
+		{"", 0},
+		{"abc", 0},           // 3/4 = 0
+		{"abcd", 1},          // 4/4 = 1
+		{"12345678", 2},      // 8/4 = 2
+		{strings.Repeat("x", 100), 25}, // 100/4 = 25
+	}
+	for _, tt := range tests {
+		got := EstimateTokens(tt.input)
+		if got != tt.expect {
+			t.Errorf("EstimateTokens(%d chars) = %d, want %d", len(tt.input), got, tt.expect)
+		}
+	}
+}
+
+func TestInferModule_AdditionalCases(t *testing.T) {
+	tests := []struct {
+		path   string
+		expect string
+	}{
+		{"src/utils/helper.go", "utils"},
+		{"lib/core/engine.py", "core"},
+		{".", ""},
+		{"single.go", ""},
+		{"deep/nested/dir/file.go", "deep"},
+	}
+	for _, tt := range tests {
+		got := inferModule(tt.path)
+		if got != tt.expect {
+			t.Errorf("inferModule(%q) = %q, want %q", tt.path, got, tt.expect)
+		}
+	}
+}
+
+func TestExtractDeclarationHeader(t *testing.T) {
+	tests := []struct {
+		content string
+		expect  string
+	}{
+		{"class Foo {\n  method() {}\n}", "class Foo {"},
+		{"struct Bar", "struct Bar"},
+		{"type MyStruct struct {\n\tField int\n}", "type MyStruct struct {"},
+		{"", ""},
+		{"single_line_only", "single_line_only"},
+	}
+	for _, tt := range tests {
+		got := extractDeclarationHeader(tt.content)
+		if got != tt.expect {
+			t.Errorf("extractDeclarationHeader(%q) = %q, want %q", tt.content, got, tt.expect)
+		}
+	}
+}
+
+func TestContentHash_EmptyContent(t *testing.T) {
+	hash := ContentHash([]byte{})
+	if hash == "" {
+		t.Error("hash of empty content should not be empty")
+	}
+	if len(hash) != 64 {
+		t.Errorf("hash should be 64 hex chars, got %d", len(hash))
+	}
+}
+
+func TestChunkFile_MultipleSymbols(t *testing.T) {
+	c := New(200, 20)
+	result := &parser.ParseResult{
+		Filepath: "multi.go",
+		Language: "go",
+		Symbols: []parser.Symbol{
+			{Name: "A", Qualified: "A", Kind: "function", Content: "func A() {}", Language: "go", LineStart: 1, LineEnd: 1},
+			{Name: "B", Qualified: "B", Kind: "function", Content: "func B() {}", Language: "go", LineStart: 3, LineEnd: 3},
+			{Name: "C", Qualified: "C", Kind: "struct", Content: "type C struct{}", Language: "go", LineStart: 5, LineEnd: 5},
+		},
+	}
+
+	chunks := c.ChunkFile(result)
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks for 3 symbols, got %d", len(chunks))
+	}
+
+	// Verify all have unique IDs
+	ids := make(map[string]bool)
+	for _, ch := range chunks {
+		if ids[ch.ID] {
+			t.Error("duplicate chunk ID found")
+		}
+		ids[ch.ID] = true
+	}
+
+	// Verify qualified names match
+	if chunks[0].QualifiedName != "A" || chunks[1].QualifiedName != "B" || chunks[2].QualifiedName != "C" {
+		t.Error("chunk qualified names don't match symbols")
+	}
+}
