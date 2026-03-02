@@ -54,6 +54,14 @@ var (
 		},
 	)
 
+	// EmbeddingErrorsTotal tracks Voyage API errors (e.g. 400 token limit).
+	EmbeddingErrorsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "codebase_intel_embedding_errors_total",
+			Help: "Total Voyage embedding API errors (400 responses)",
+		},
+	)
+
 	// SearchResultsTotal counts total search results returned per codebase.
 	SearchResultsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -125,6 +133,7 @@ func init() {
 	prometheus.MustRegister(IndexSize)
 	prometheus.MustRegister(EmbeddingTokensTotal)
 	prometheus.MustRegister(EmbeddingRequestsTotal)
+	prometheus.MustRegister(EmbeddingErrorsTotal)
 	prometheus.MustRegister(SearchResultsTotal)
 	prometheus.MustRegister(SearchRelevanceScore)
 	prometheus.MustRegister(SearchEmptyTotal)
