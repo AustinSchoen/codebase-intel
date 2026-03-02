@@ -40,14 +40,19 @@ type ReindexRequest struct {
 
 // IndexerManager tracks connected indexer daemons and reindex requests.
 type IndexerManager struct {
-	nodes    sync.Map // nodeID -> *IndexerNode
-	requests sync.Map // requestID -> *ReindexRequest
+	mu       sync.RWMutex
+	nodes    map[string]*IndexerNode        // nodeID -> *IndexerNode
+	requests map[string]*ReindexRequest     // requestID -> *ReindexRequest
 	logger   *log.Logger
 }
 
 // NewIndexerManager creates a new IndexerManager.
 func NewIndexerManager(logger *log.Logger) *IndexerManager {
-	return &IndexerManager{logger: logger}
+	return &IndexerManager{
+		nodes:    make(map[string]*IndexerNode),
+		requests: make(map[string]*ReindexRequest),
+		logger:   logger,
+	}
 }
 
 // RegisterNode registers an indexer daemon connection.
@@ -60,15 +65,23 @@ func (m *IndexerManager) RegisterNode(nodeID string, codebases []string, sseChan
 		Status:      "idle",
 		SSEChan:     sseChan,
 	}
-	m.nodes.Store(nodeID, node)
+	m.mu.Lock()
+	m.nodes[nodeID] = node
+	m.mu.Unlock()
 	m.updateNodeCount()
 	m.logger.Printf("indexer node registered: %s (codebases: %v)", nodeID, codebases)
 }
 
 // DeregisterNode removes an indexer daemon.
 func (m *IndexerManager) DeregisterNode(nodeID string) {
-	if v, ok := m.nodes.LoadAndDelete(nodeID); ok {
-		node := v.(*IndexerNode)
+	m.mu.Lock()
+	node, ok := m.nodes[nodeID]
+	if ok {
+		delete(m.nodes, nodeID)
+	}
+	m.mu.Unlock()
+
+	if ok {
 		close(node.SSEChan)
 		m.updateNodeCount()
 		m.logger.Printf("indexer node deregistered: %s", nodeID)
@@ -80,21 +93,25 @@ func (m *IndexerManager) DeregisterNode(nodeID string) {
 func (m *IndexerManager) SendReindex(codebase string, full bool) (string, error) {
 	requestID := generateRequestID()
 
+	m.mu.Lock()
 	// Find an indexer that serves this codebase
 	var targetNode *IndexerNode
-	m.nodes.Range(func(_, v interface{}) bool {
-		node := v.(*IndexerNode)
+	for _, node := range m.nodes {
 		for _, cb := range node.Codebases {
 			if cb == codebase {
 				targetNode = node
-				return false
+				break
 			}
 		}
-		return true
-	})
+		if targetNode != nil {
+			break
+		}
+	}
 
 	if targetNode == nil {
-		return "", &NoIndexerError{Codebase: codebase, Available: m.ListAvailableCodebases()}
+		available := m.listAvailableCodebasesLocked()
+		m.mu.Unlock()
+		return "", &NoIndexerError{Codebase: codebase, Available: available}
 	}
 
 	req := &ReindexRequest{
@@ -105,7 +122,8 @@ func (m *IndexerManager) SendReindex(codebase string, full bool) (string, error)
 		Status:    "requested",
 		StartedAt: time.Now(),
 	}
-	m.requests.Store(requestID, req)
+	m.requests[requestID] = req
+	m.mu.Unlock()
 
 	// Record metric
 	reindexType := "incremental"
@@ -114,7 +132,7 @@ func (m *IndexerManager) SendReindex(codebase string, full bool) (string, error)
 	}
 	metrics.RecordReindexRequest(codebase, reindexType)
 
-	// Send command via SSE
+	// Send command via SSE (channel send is safe outside the lock)
 	cmd := map[string]interface{}{
 		"type":       "reindex",
 		"codebase":   codebase,
@@ -129,8 +147,10 @@ func (m *IndexerManager) SendReindex(codebase string, full bool) (string, error)
 			targetNode.NodeID, codebase, full, requestID)
 	default:
 		m.logger.Printf("warning: failed to send reindex command to %s (channel full)", targetNode.NodeID)
+		m.mu.Lock()
 		req.Status = "error"
 		req.Error = "failed to send command to indexer (channel full)"
+		m.mu.Unlock()
 	}
 
 	return requestID, nil
@@ -138,19 +158,19 @@ func (m *IndexerManager) SendReindex(codebase string, full bool) (string, error)
 
 // UpdateStatus updates a reindex request's status from an indexer progress report.
 func (m *IndexerManager) UpdateStatus(requestID, nodeID, codebase, status string, filesTotal, filesProcessed, filesIndexed, filesSkipped int, durationMs int64, errMsg string) {
-	v, ok := m.requests.Load(requestID)
+	m.mu.Lock()
+	req, ok := m.requests[requestID]
 	if !ok {
 		// Create a new request entry for unknown request IDs (e.g., file-watch triggered)
-		v = &ReindexRequest{
+		req = &ReindexRequest{
 			RequestID: requestID,
 			Codebase:  codebase,
 			NodeID:    nodeID,
 			StartedAt: time.Now(),
 		}
-		m.requests.Store(requestID, v)
+		m.requests[requestID] = req
 	}
 
-	req := v.(*ReindexRequest)
 	req.Status = status
 	req.NodeID = nodeID
 	req.Codebase = codebase
@@ -163,14 +183,10 @@ func (m *IndexerManager) UpdateStatus(requestID, nodeID, codebase, status string
 
 	if status == "complete" || status == "error" {
 		req.CompletedAt = time.Now()
-		if durationMs > 0 {
-			metrics.RecordReindexDuration(codebase, time.Duration(durationMs)*time.Millisecond)
-		}
 	}
 
 	// Update node status
-	if v, ok := m.nodes.Load(nodeID); ok {
-		node := v.(*IndexerNode)
+	if node, ok := m.nodes[nodeID]; ok {
 		node.LastSeen = time.Now()
 		if status == "started" || status == "progress" {
 			node.Status = "indexing"
@@ -178,91 +194,97 @@ func (m *IndexerManager) UpdateStatus(requestID, nodeID, codebase, status string
 			node.Status = "idle"
 		}
 	}
+	m.mu.Unlock()
+
+	if (status == "complete" || status == "error") && durationMs > 0 {
+		metrics.RecordReindexDuration(codebase, time.Duration(durationMs)*time.Millisecond)
+	}
 }
 
 // GetReindexStatus returns status for a specific request ID.
 func (m *IndexerManager) GetReindexStatus(requestID string) *ReindexRequest {
-	v, ok := m.requests.Load(requestID)
-	if !ok {
-		return nil
-	}
-	return v.(*ReindexRequest)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.requests[requestID]
 }
 
 // GetReindexStatusByCodebase returns the latest reindex status for a codebase.
 func (m *IndexerManager) GetReindexStatusByCodebase(codebase string) *ReindexRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var latest *ReindexRequest
-	m.requests.Range(func(_, v interface{}) bool {
-		req := v.(*ReindexRequest)
+	for _, req := range m.requests {
 		if req.Codebase == codebase {
 			if latest == nil || req.StartedAt.After(latest.StartedAt) {
 				latest = req
 			}
 		}
-		return true
-	})
+	}
 	return latest
 }
 
 // GetAllReindexStatuses returns all recent reindex statuses.
 func (m *IndexerManager) GetAllReindexStatuses() []*ReindexRequest {
-	var all []*ReindexRequest
-	m.requests.Range(func(_, v interface{}) bool {
-		all = append(all, v.(*ReindexRequest))
-		return true
-	})
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	all := make([]*ReindexRequest, 0, len(m.requests))
+	for _, req := range m.requests {
+		all = append(all, req)
+	}
 	return all
 }
 
 // GetNodes returns all connected indexer nodes.
 func (m *IndexerManager) GetNodes() []*IndexerNode {
-	var nodes []*IndexerNode
-	m.nodes.Range(func(_, v interface{}) bool {
-		nodes = append(nodes, v.(*IndexerNode))
-		return true
-	})
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	nodes := make([]*IndexerNode, 0, len(m.nodes))
+	for _, node := range m.nodes {
+		nodes = append(nodes, node)
+	}
 	return nodes
 }
 
 // GetNodeForCodebase returns the connected node serving a given codebase, if any.
 func (m *IndexerManager) GetNodeForCodebase(codebase string) *IndexerNode {
-	var result *IndexerNode
-	m.nodes.Range(func(_, v interface{}) bool {
-		node := v.(*IndexerNode)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, node := range m.nodes {
 		for _, cb := range node.Codebases {
 			if cb == codebase {
-				result = node
-				return false
+				return node
 			}
 		}
-		return true
-	})
-	return result
+	}
+	return nil
 }
 
 // ListAvailableCodebases returns all codebases served by connected indexers.
 func (m *IndexerManager) ListAvailableCodebases() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.listAvailableCodebasesLocked()
+}
+
+// listAvailableCodebasesLocked requires m.mu to be held.
+func (m *IndexerManager) listAvailableCodebasesLocked() []string {
 	seen := make(map[string]bool)
 	var codebases []string
-	m.nodes.Range(func(_, v interface{}) bool {
-		node := v.(*IndexerNode)
+	for _, node := range m.nodes {
 		for _, cb := range node.Codebases {
 			if !seen[cb] {
 				seen[cb] = true
 				codebases = append(codebases, cb)
 			}
 		}
-		return true
-	})
+	}
 	return codebases
 }
 
 func (m *IndexerManager) updateNodeCount() {
-	var count float64
-	m.nodes.Range(func(_, _ interface{}) bool {
-		count++
-		return true
-	})
+	m.mu.RLock()
+	count := float64(len(m.nodes))
+	m.mu.RUnlock()
 	metrics.SetIndexerConnectedNodes(count)
 }
 

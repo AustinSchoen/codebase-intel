@@ -32,9 +32,10 @@ type Daemon struct {
 	cfg    DaemonConfig
 	logger interface{ Printf(string, ...interface{}) }
 
-	mu           sync.Mutex
-	pendingFiles map[string]fsnotify.Op
+	mu            sync.Mutex
+	pendingFiles  map[string]fsnotify.Op
 	debounceTimer *time.Timer
+	reindexMu     sync.Mutex // serializes reindex operations
 }
 
 // NewDaemon creates a new daemon wrapping an existing indexer.
@@ -197,7 +198,13 @@ func (d *Daemon) handleSSEEvent(ctx context.Context, data []byte) {
 }
 
 // handleReindex performs a reindex and reports progress to the MCP server.
+// Serialized by reindexMu to prevent concurrent reindex operations from
+// racing on shared indexer config.
 func (d *Daemon) handleReindex(ctx context.Context, codebase string, full bool, requestID string) {
+	d.reindexMu.Lock()
+	defer d.reindexMu.Unlock()
+
+	prevIncremental := d.idx.cfg.Indexing.Incremental
 	if full {
 		d.idx.cfg.Indexing.Incremental = false
 	}
@@ -209,6 +216,9 @@ func (d *Daemon) handleReindex(ctx context.Context, codebase string, full bool, 
 	err := d.idx.fullIndex(ctx)
 	durationMs := time.Since(startTime).Milliseconds()
 
+	// Restore original incremental mode
+	d.idx.cfg.Indexing.Incremental = prevIncremental
+
 	if err != nil {
 		d.logger.Printf("reindex error: %v", err)
 		d.reportStatus(requestID, "error", 0, 0, 0, 0, durationMs, err.Error())
@@ -216,9 +226,6 @@ func (d *Daemon) handleReindex(ctx context.Context, codebase string, full bool, 
 		d.logger.Printf("reindex complete in %dms", durationMs)
 		d.reportStatus(requestID, "complete", 0, 0, 0, 0, durationMs, "")
 	}
-
-	// Restore incremental mode
-	d.idx.cfg.Indexing.Incremental = true
 }
 
 // reportStatus sends a progress update to the MCP server.
