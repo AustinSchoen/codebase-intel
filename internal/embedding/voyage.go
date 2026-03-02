@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	voyageAPIURL   = "https://api.voyageai.com/v1/embeddings"
-	maxBatchSize   = 128
-	defaultTimeout = 30 * time.Second
+	voyageAPIURL       = "https://api.voyageai.com/v1/embeddings"
+	maxBatchSize       = 128
+	maxBatchTokens     = 100000 // stay under Voyage's 120K limit
+	charsPerTokenGuess = 4      // rough token estimation: ~4 chars per token
+	defaultTimeout     = 30 * time.Second
 )
 
 // VoyageClient sends embedding requests to the Voyage AI API.
@@ -83,13 +85,14 @@ func (c *VoyageClient) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 		return nil, nil
 	}
 
-	var batches [][]string
-	for i := 0; i < len(texts); i += c.maxBatch {
-		end := i + c.maxBatch
-		if end > len(texts) {
-			end = len(texts)
-		}
-		batches = append(batches, texts[i:end])
+	batches := splitBatches(texts, c.maxBatch)
+
+	// Precompute offsets for each batch since they may have different sizes
+	offsets := make([]int, len(batches))
+	offset := 0
+	for i, b := range batches {
+		offsets[i] = offset
+		offset += len(b)
 	}
 
 	type batchResult struct {
@@ -124,9 +127,9 @@ func (c *VoyageClient) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 		if r.err != nil {
 			return nil, fmt.Errorf("batch %d: %w", r.index, r.err)
 		}
-		offset := r.index * c.maxBatch
+		batchOffset := offsets[r.index]
 		for j, emb := range r.embeddings {
-			ordered[offset+j] = emb
+			ordered[batchOffset+j] = emb
 		}
 	}
 
@@ -163,6 +166,13 @@ func (c *VoyageClient) embedSingle(ctx context.Context, texts []string) ([][]flo
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusBadRequest {
+		// 400 errors (e.g. token limit exceeded) — log and return empty embeddings
+		// so we don't fail the entire batch
+		metrics.EmbeddingErrorsTotal.Inc()
+		return make([][]float32, len(texts)), nil
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("voyage API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
@@ -183,4 +193,35 @@ func (c *VoyageClient) embedSingle(ctx context.Context, texts []string) ([][]flo
 	}
 
 	return embeddings, nil
+}
+
+// splitBatches groups texts into batches respecting both item count and token limits.
+// Estimated tokens = len(text) / charsPerTokenGuess.
+func splitBatches(texts []string, maxItems int) [][]string {
+	var batches [][]string
+	var current []string
+	currentTokens := 0
+
+	for _, text := range texts {
+		estTokens := len(text) / charsPerTokenGuess
+		if estTokens < 1 {
+			estTokens = 1
+		}
+
+		// Start a new batch if adding this text would exceed limits
+		if len(current) > 0 && (len(current) >= maxItems || currentTokens+estTokens > maxBatchTokens) {
+			batches = append(batches, current)
+			current = nil
+			currentTokens = 0
+		}
+
+		current = append(current, text)
+		currentTokens += estTokens
+	}
+
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+
+	return batches
 }
