@@ -3,6 +3,7 @@ module github.com/AustinSchoen/codebase-intel
 go 1.24.0
 
 require (
+	github.com/UserNobody14/tree-sitter-dart v0.0.0-20251003151139-c8e7cbbd1589
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/prometheus/client_golang v1.23.2

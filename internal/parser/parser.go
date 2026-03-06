@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	dart "github.com/UserNobody14/tree-sitter-dart/bindings/go"
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/c"
 	"github.com/smacker/go-tree-sitter/cpp"
@@ -52,8 +53,9 @@ type Parser struct {
 	languages map[string]*sitter.Language
 }
 
-// New creates a parser with grammars for Go, Python, TypeScript, JavaScript, Rust, C, C++, Kotlin, and Swift.
+// New creates a parser with grammars for Go, Python, TypeScript, JavaScript, Rust, C, C++, Kotlin, Swift, and Dart.
 func New() *Parser {
+	dartLang := sitter.NewLanguage(dart.Language())
 	return &Parser{
 		languages: map[string]*sitter.Language{
 			"go":         golang.GetLanguage(),
@@ -76,6 +78,7 @@ func New() *Parser {
 			"kt":         kotlin.GetLanguage(),
 			"kts":        kotlin.GetLanguage(),
 			"swift":      swift.GetLanguage(),
+			"dart":       dartLang,
 		},
 	}
 }
@@ -128,6 +131,8 @@ func (p *Parser) ParseFile(ctx context.Context, filepath string, source []byte, 
 		p.extractKotlin(root, source, result)
 	case "swift":
 		p.extractSwift(root, source, result)
+	case "dart":
+		p.extractDart(root, source, result)
 	}
 
 	return result, nil
