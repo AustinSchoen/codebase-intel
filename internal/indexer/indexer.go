@@ -549,6 +549,7 @@ func (idx *Indexer) detectLanguage(path string) string {
 		".kt":    "kotlin",
 		".kts":   "kts",
 		".swift": "swift",
+		".dart":  "dart",
 	}
 
 	lang, ok := langMap[ext]
