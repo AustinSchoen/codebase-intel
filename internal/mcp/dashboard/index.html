@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codebase Intelligence</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <h1>Codebase Intelligence</h1>
+            <span class="version">MCP Server</span>
+        </div>
+        <div class="header-right">
+            <div class="stat-pills" id="global-stats"></div>
+            <div class="meta">
+                <span id="uptime"></span>
+                <span class="separator">|</span>
+                <span id="last-updated"></span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <section id="codebases-section">
+            <h2>Codebases</h2>
+            <div class="card-grid" id="codebases-grid">
+                <div class="loading">Loading...</div>
+            </div>
+        </section>
+
+        <section id="indexers-section">
+            <h2>Indexer Nodes</h2>
+            <div class="table-wrap">
+                <table id="indexers-table">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Node ID</th>
+                            <th>Codebases</th>
+                            <th>State</th>
+                            <th>Connected</th>
+                            <th>Last Seen</th>
+                        </tr>
+                    </thead>
+                    <tbody id="indexers-body">
+                        <tr><td colspan="6" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="activity-section">
+            <h2>Recent Activity</h2>
+            <div class="table-wrap">
+                <table id="activity-table">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Codebase</th>
+                            <th>Type</th>
+                            <th>Files</th>
+                            <th>Duration</th>
+                            <th>Started</th>
+                            <th>Node</th>
+                        </tr>
+                    </thead>
+                    <tbody id="activity-body">
+                        <tr><td colspan="7" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

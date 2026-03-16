@@ -75,6 +75,9 @@ func (s *Server) RunHTTP(addr string) error {
 	mux.HandleFunc("/mcp/indexer/status", t.handleIndexerStatus)
 	mux.HandleFunc("/mcp/indexer/nodes", t.handleIndexerNodes)
 
+	// Dashboard and API routes (no auth required)
+	t.registerDashboardRoutes(mux)
+
 	s.logger.Printf("MCP HTTP server listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
 }
