@@ -4,10 +4,11 @@ An MCP server that indexes your codebases and gives AI agents deep understanding
 
 ## Features
 
-- **7 language parsers** — Go, Python, TypeScript, JavaScript, Rust, Kotlin, Swift
+- **10 language parsers** — Go, Python, TypeScript, JavaScript, Rust, C, C++, Kotlin, Swift, Dart
 - **Hybrid search** — dense (Voyage AI) + sparse vectors via Qdrant
 - **Symbol intelligence** — fuzzy lookup, cross-references, class hierarchies
 - **Architectural summaries** — module and subsystem explanations (via Claude)
+- **Unreal Engine aware** — parses `UCLASS` / `UPROPERTY` / `UFUNCTION` reflection macros and `.Build.cs` module graphs
 - **Incremental indexing** — only re-processes changed files
 - **Multi-codebase** — one server serves many indexed projects
 - **Daemon mode** — file watcher with auto-reindex on changes
@@ -131,6 +132,10 @@ docker compose down -v   # removes volumes (all data)
 ./setup.sh               # fresh start
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, project layout, and conventions. Bug reports and PRs welcome.
+
 ## License
 
-MIT
+[MIT](LICENSE) © Austin Schoen
