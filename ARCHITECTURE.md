@@ -841,7 +841,7 @@ vector_store:
 
 metadata_store:
   provider: "postgres"
-  host: "postgres.lan"           # your existing instance
+  host: "localhost"              # or your existing Postgres host
   port: 5432
   database: "codebase_intel"
   user_env: "PGUSER"
