@@ -137,6 +137,14 @@ func (s *Store) GetFileStructuralHash(ctx context.Context, codebaseID, filepath 
 }
 
 // DeleteFileData removes all data for a specific file (chunks, symbols, file state).
+//
+// Use this only when the file is genuinely gone (deleted on disk, removed from
+// the codebase, GC'd). It cascades through the relationships FK, which is the
+// correct behavior in that case.
+//
+// For the common incremental-reindex path — where the file still exists but
+// its content changed — use CleanupStaleFileData instead, which preserves
+// symbol IDs that still exist and only drops genuine orphans. See issue #7.
 func (s *Store) DeleteFileData(ctx context.Context, codebaseID, filepath string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -153,6 +161,43 @@ func (s *Store) DeleteFileData(ctx context.Context, codebaseID, filepath string)
 	if _, err := tx.Exec(ctx, `DELETE FROM file_state WHERE codebase_id = $1 AND filepath = $2`, codebaseID, filepath); err != nil {
 		return err
 	}
+	return tx.Commit(ctx)
+}
+
+// CleanupStaleFileData removes symbols and chunks for a file whose IDs are not
+// in keepIDs — i.e., symbols that were renamed, moved, or removed since the last
+// index of this file. Symbols whose IDs are still in keepIDs are preserved,
+// which keeps the relationships FK cascade from firing on rows that other,
+// unchanged files reference (the root cause of incremental reindex losing
+// relationships — see issue #7).
+//
+// Pass keepIDs as the IDs of the symbols just upserted for this file. The
+// cascade still fires for genuinely orphaned symbols, which is correct: those
+// symbols no longer exist, so relationships referencing them should also be
+// removed.
+func (s *Store) CleanupStaleFileData(ctx context.Context, codebaseID, filepath string, keepIDs []string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Chunks: delete those whose id isn't in the new set.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM chunks
+		WHERE codebase_id = $1 AND filepath = $2 AND NOT (id = ANY($3::text[]))
+	`, codebaseID, filepath, keepIDs); err != nil {
+		return fmt.Errorf("cleanup stale chunks: %w", err)
+	}
+
+	// Symbols: same. Cascade fires only for orphans (correct behavior).
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM symbols
+		WHERE codebase_id = $1 AND filepath = $2 AND NOT (id = ANY($3::text[]))
+	`, codebaseID, filepath, keepIDs); err != nil {
+		return fmt.Errorf("cleanup stale symbols: %w", err)
+	}
+
 	return tx.Commit(ctx)
 }
 
