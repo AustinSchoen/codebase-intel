@@ -13,52 +13,98 @@ import (
 	"github.com/AustinSchoen/codebase-intel/internal/indexer"
 )
 
+// multiFlag collects repeated occurrences of a string flag (e.g.
+// `-config a.yaml -config b.yaml`) into a slice while still behaving like an
+// ordinary flag when supplied once.
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
 func main() {
+	var configFiles multiFlag
+
 	var (
-		path       = flag.String("path", "", "Path to codebase to index")
-		configFile = flag.String("config", "", "Path to config.yaml")
-		reindex    = flag.Bool("reindex", false, "Force full re-index (ignore content hashes)")
-		migrate    = flag.Bool("migrate", false, "Run database migrations and exit")
-		daemon     = flag.Bool("daemon", false, "Run in daemon mode (watch files + register with MCP server)")
-		serverURL  = flag.String("server-url", "", "MCP server URL for daemon mode (e.g., https://codebase-intel.example.com)")
-		serverKey  = flag.String("server-key", "", "Bearer token for MCP server authentication")
-		nodeID     = flag.String("node-id", "", "Node identifier for daemon registration (defaults to hostname)")
+		path      = flag.String("path", "", "Path to codebase to index (overrides codebase.path in the config; only valid with a single -config)")
+		reindex   = flag.Bool("reindex", false, "Force full re-index (ignore content hashes)")
+		migrate   = flag.Bool("migrate", false, "Run database migrations and exit")
+		daemon    = flag.Bool("daemon", false, "Run in daemon mode (watch files + register with MCP server)")
+		serverURL = flag.String("server-url", "", "MCP server URL for daemon mode (e.g., https://codebase-intel.example.com)")
+		serverKey = flag.String("server-key", "", "Bearer token for MCP server authentication")
+		nodeID    = flag.String("node-id", "", "Node identifier for daemon registration (defaults to hostname)")
 	)
+	flag.Var(&configFiles, "config", "Path to a codebase config.yaml. Repeat for multiple codebases in daemon mode.")
 	flag.Parse()
 
-	// Load config
-	var cfg *config.Config
-	var err error
-	if *configFile != "" {
-		cfg, err = config.LoadFromFile(*configFile)
+	// Load configs. If no -config is supplied, fall back to the default
+	// search path (config.Load) for backward compatibility.
+	var configs []*config.Config
+	if len(configFiles) == 0 {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+			os.Exit(1)
+		}
+		configs = []*config.Config{cfg}
 	} else {
-		cfg, err = config.Load()
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
+		for _, path := range configFiles {
+			cfg, err := config.LoadFromFile(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to load config %s: %v\n", path, err)
+				os.Exit(1)
+			}
+			configs = append(configs, cfg)
+		}
 	}
 
-	// Override codebase path if provided
+	// -path only makes sense with a single config.
 	if *path != "" {
-		cfg.Codebase.Path = *path
+		if len(configs) != 1 {
+			fmt.Fprintf(os.Stderr, "Error: -path can only be used with a single -config\n")
+			os.Exit(1)
+		}
+		configs[0].Codebase.Path = *path
 	}
 
-	// Disable incremental mode for reindex
+	// Disable incremental mode for forced reindex.
 	if *reindex {
-		cfg.Indexing.Incremental = false
+		for _, cfg := range configs {
+			cfg.Indexing.Incremental = false
+		}
 	}
 
-	idx, err := indexer.New(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create indexer: %v\n", err)
-		os.Exit(1)
+	// Build one Indexer per config. Reject duplicate codebase names — the
+	// daemon's indexer map and the server's node map both key on codebase
+	// name, so duplicates would silently shadow each other.
+	indexers := make(map[string]*indexer.Indexer, len(configs))
+	for _, cfg := range configs {
+		name := cfg.Codebase.Name
+		if _, dup := indexers[name]; dup {
+			fmt.Fprintf(os.Stderr, "Error: duplicate codebase name %q across -config flags\n", name)
+			os.Exit(1)
+		}
+		idx, err := indexer.New(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create indexer for %s: %v\n", name, err)
+			os.Exit(1)
+		}
+		indexers[name] = idx
 	}
 
-	// Run migrations if requested
+	// Migrations: schema is shared across codebases, so run against the first
+	// indexer and exit.
 	if *migrate {
 		migrationsDir := findMigrationsDir()
-		if err := idx.RunMigrations(context.Background(), migrationsDir); err != nil {
+		// Map iteration order is non-deterministic; pick whatever comes out.
+		var any *indexer.Indexer
+		for _, idx := range indexers {
+			any = idx
+			break
+		}
+		if err := any.RunMigrations(context.Background(), migrationsDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Migration failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -66,7 +112,7 @@ func main() {
 		return
 	}
 
-	// Daemon mode
+	// Daemon mode: serve all indexers from one process, one SSE connection.
 	if *daemon {
 		if *serverURL == "" {
 			fmt.Fprintf(os.Stderr, "Error: -server-url is required in daemon mode\n")
@@ -83,14 +129,18 @@ func main() {
 			}
 		}
 
-		d := indexer.NewDaemon(idx, indexer.DaemonConfig{
+		d := indexer.NewDaemon(indexers, indexer.DaemonConfig{
 			ServerURL: *serverURL,
 			ServerKey: *serverKey,
 			NodeID:    nid,
 		})
 
-		fmt.Fprintf(os.Stderr, "Starting daemon mode: node=%s codebase=%s server=%s\n",
-			nid, cfg.Codebase.Name, *serverURL)
+		codebaseNames := make([]string, 0, len(indexers))
+		for name := range indexers {
+			codebaseNames = append(codebaseNames, name)
+		}
+		fmt.Fprintf(os.Stderr, "Starting daemon mode: node=%s codebases=%v server=%s\n",
+			nid, codebaseNames, *serverURL)
 
 		if err := d.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Daemon error: %v\n", err)
@@ -99,10 +149,15 @@ func main() {
 		return
 	}
 
-	// Run indexer (one-shot mode)
-	if err := idx.RunOnce(); err != nil {
-		fmt.Fprintf(os.Stderr, "Indexer error: %v\n", err)
-		os.Exit(1)
+	// One-shot mode: index each codebase sequentially.
+	for name, idx := range indexers {
+		if len(indexers) > 1 {
+			fmt.Fprintf(os.Stderr, "Indexing codebase: %s\n", name)
+		}
+		if err := idx.RunOnce(); err != nil {
+			fmt.Fprintf(os.Stderr, "Indexer error for %s: %v\n", name, err)
+			os.Exit(1)
+		}
 	}
 }
 
