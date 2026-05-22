@@ -313,16 +313,13 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, []rawRela
 		return false, nil, nil
 	}
 
-	// Delete old data for this file
-	if err := idx.store.DeleteFileData(ctx, idx.cfg.Codebase.Name, relPath); err != nil {
-		return false, nil, fmt.Errorf("deleting old data: %w", err)
-	}
-	if err := idx.qdrant.DeleteByFilter(ctx, idx.cfg.Codebase.Name, relPath); err != nil {
-		idx.logger.Printf("warning: deleting old vectors for %s: %v", relPath, err)
-	}
-
-	// Build symbols for postgres
+	// Build symbols for postgres. IDs are deterministic (chunkID derived from
+	// filepath + qualified name + line), so re-indexing an unchanged symbol
+	// produces the same ID and UpsertSymbols becomes a no-op DO UPDATE — which
+	// is what keeps the relationships FK from cascade-deleting rows that other
+	// files reference (issue #7).
 	var symbols []postgres.Symbol
+	keepIDs := make([]string, 0, len(chunks))
 	for _, ch := range chunks {
 		symbols = append(symbols, postgres.Symbol{
 			ID:         ch.ID,
@@ -335,6 +332,7 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, []rawRela
 			LineEnd:    ch.LineEnd,
 			Module:     ch.Module,
 		})
+		keepIDs = append(keepIDs, ch.ID)
 	}
 
 	if err := idx.store.UpsertSymbols(ctx, symbols); err != nil {
@@ -391,7 +389,12 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, []rawRela
 		})
 	}
 
-	// Upsert to Qdrant
+	// Refresh Qdrant: clear out vectors for this filepath, then upsert the new
+	// set. Qdrant has no FK relationships, so a delete+upsert here is safe and
+	// keeps vectors aligned with the current chunk set even if line ranges shift.
+	if err := idx.qdrant.DeleteByFilter(ctx, idx.cfg.Codebase.Name, relPath); err != nil {
+		idx.logger.Printf("warning: deleting old vectors for %s: %v", relPath, err)
+	}
 	if err := idx.qdrant.Upsert(ctx, idx.cfg.Codebase.Name, points); err != nil {
 		return false, nil, fmt.Errorf("upserting vectors: %w", err)
 	}
@@ -399,6 +402,15 @@ func (idx *Indexer) indexFile(ctx context.Context, path string) (bool, []rawRela
 	// Upsert chunk records to Postgres
 	if err := idx.store.UpsertChunks(ctx, chunkRecords); err != nil {
 		return false, nil, fmt.Errorf("upserting chunk records: %w", err)
+	}
+
+	// Remove any chunk/symbol rows for this file that no longer exist in the
+	// new parse result (symbols that were renamed, moved, or deleted). The
+	// relationships FK cascade fires only for these genuine orphans — symbols
+	// that still exist with the same ID survive, preserving incoming
+	// relationships from other unchanged files. See issue #7.
+	if err := idx.store.CleanupStaleFileData(ctx, idx.cfg.Codebase.Name, relPath, keepIDs); err != nil {
+		return false, nil, fmt.Errorf("cleaning up stale rows: %w", err)
 	}
 
 	// Compute structural AST hash (best-effort, non-fatal)
