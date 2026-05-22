@@ -7,20 +7,25 @@
 //   go test -tags=integration ./internal/storage/postgres/...
 //
 // Requires a working Docker (or Podman with the Docker socket shim) on the
-// host. CI configuration lives in .github/workflows/integration-tests.yml.
+// host. CI configuration lives in .github/workflows/ci.yml.
+//
+// Lives in package postgres_test (external) because it imports the
+// migrations package, which itself imports postgres — moving the tests
+// out of the white-box package avoids the cycle.
 
-package postgres
+package postgres_test
 
 import (
 	"context"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/AustinSchoen/codebase-intel/internal/migrations"
+	"github.com/AustinSchoen/codebase-intel/internal/storage/postgres"
 )
 
 // setupTestStore spins up a fresh pgvector container, runs migrations against
@@ -29,7 +34,7 @@ import (
 //
 // Container startup takes a few seconds. If you're iterating on a single test,
 // `go test -run TestX -tags=integration` is the fastest loop.
-func setupTestStore(t *testing.T) *Store {
+func setupTestStore(t *testing.T) *postgres.Store {
 	t.Helper()
 	ctx := context.Background()
 
@@ -58,35 +63,26 @@ func setupTestStore(t *testing.T) *Store {
 		t.Fatalf("getting connection string: %v", err)
 	}
 
-	store, err := NewStore(ctx, dsn, 10)
+	store, err := postgres.NewStore(ctx, dsn, 10)
 	if err != nil {
 		t.Fatalf("connecting store: %v", err)
 	}
 	t.Cleanup(store.Close)
 
-	if err := store.RunMigrations(ctx, migrationsDir(t)); err != nil {
+	// Migrations live in internal/migrations now (#18 moved them off disk and
+	// into a go:embed-backed package). Use the same runner the server does on
+	// startup, so any divergence between "what tests apply" and "what the
+	// real server applies" is impossible.
+	if err := migrations.Run(ctx, store); err != nil {
 		t.Fatalf("running migrations: %v", err)
 	}
 
 	return store
 }
 
-// migrationsDir resolves the path to the repo's migrations directory from the
-// test source file, so the test works regardless of the working directory it's
-// invoked from.
-func migrationsDir(t *testing.T) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not determine integration_test.go path via runtime.Caller")
-	}
-	// internal/storage/postgres/integration_test.go -> repo root is three up.
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "migrations")
-}
-
 // ensureCodebase is a small helper to insert a codebase row so symbols that
 // reference it via FK can be inserted.
-func ensureCodebase(t *testing.T, store *Store, id string) {
+func ensureCodebase(t *testing.T, store *postgres.Store, id string) {
 	t.Helper()
 	if err := store.EnsureCodebase(context.Background(), id, "/tmp/"+id, id); err != nil {
 		t.Fatalf("ensuring codebase %q: %v", id, err)
@@ -99,7 +95,7 @@ func TestStore_RoundTripSymbol(t *testing.T) {
 
 	ensureCodebase(t, store, "demo")
 
-	sym := Symbol{
+	sym := postgres.Symbol{
 		ID:         "sym-1",
 		CodebaseID: "demo",
 		Name:       "Hello",
@@ -110,7 +106,7 @@ func TestStore_RoundTripSymbol(t *testing.T) {
 		LineEnd:    3,
 		Module:     "main",
 	}
-	if err := store.UpsertSymbols(ctx, []Symbol{sym}); err != nil {
+	if err := store.UpsertSymbols(ctx, []postgres.Symbol{sym}); err != nil {
 		t.Fatalf("upserting symbol: %v", err)
 	}
 
@@ -146,20 +142,20 @@ func TestCleanupStaleFileData_PreservesUnchangedRelationships(t *testing.T) {
 	ensureCodebase(t, store, codebase)
 
 	// File A: two symbols.
-	symA1 := Symbol{ID: "a1", CodebaseID: codebase, Name: "Foo", Qualified: "a.Foo", Kind: "function", Filepath: "a.go", LineStart: 1, LineEnd: 5}
-	symA2 := Symbol{ID: "a2", CodebaseID: codebase, Name: "Bar", Qualified: "a.Bar", Kind: "function", Filepath: "a.go", LineStart: 10, LineEnd: 15}
+	symA1 := postgres.Symbol{ID: "a1", CodebaseID: codebase, Name: "Foo", Qualified: "a.Foo", Kind: "function", Filepath: "a.go", LineStart: 1, LineEnd: 5}
+	symA2 := postgres.Symbol{ID: "a2", CodebaseID: codebase, Name: "Bar", Qualified: "a.Bar", Kind: "function", Filepath: "a.go", LineStart: 10, LineEnd: 15}
 
 	// File B: one symbol that calls into file A.
-	symB1 := Symbol{ID: "b1", CodebaseID: codebase, Name: "Baz", Qualified: "b.Baz", Kind: "function", Filepath: "b.go", LineStart: 1, LineEnd: 8}
+	symB1 := postgres.Symbol{ID: "b1", CodebaseID: codebase, Name: "Baz", Qualified: "b.Baz", Kind: "function", Filepath: "b.go", LineStart: 1, LineEnd: 8}
 
-	if err := store.UpsertSymbols(ctx, []Symbol{symA1, symA2, symB1}); err != nil {
+	if err := store.UpsertSymbols(ctx, []postgres.Symbol{symA1, symA2, symB1}); err != nil {
 		t.Fatalf("initial UpsertSymbols: %v", err)
 	}
 
 	// Two relationships:
 	//   crossFile: b.Baz calls a.Foo  — the canary; depends on a.Foo's id
 	//   sameFile:  a.Bar calls a.Foo  — emitted by file A itself
-	rels := []Relationship{
+	rels := []postgres.Relationship{
 		{CodebaseID: codebase, SourceID: "b1", TargetID: "a1", Kind: "calls", Filepath: "b.go", Line: 4},
 		{CodebaseID: codebase, SourceID: "a2", TargetID: "a1", Kind: "calls", Filepath: "a.go", Line: 12},
 	}
@@ -175,7 +171,7 @@ func TestCleanupStaleFileData_PreservesUnchangedRelationships(t *testing.T) {
 	// with the same IDs (deterministic chunkID), then CleanupStaleFileData runs
 	// to remove orphans. Both IDs are still present, so cleanup is a no-op for
 	// this file.
-	if err := store.UpsertSymbols(ctx, []Symbol{symA1, symA2}); err != nil {
+	if err := store.UpsertSymbols(ctx, []postgres.Symbol{symA1, symA2}); err != nil {
 		t.Fatalf("re-UpsertSymbols: %v", err)
 	}
 	if err := store.CleanupStaleFileData(ctx, codebase, "a.go", []string{"a1", "a2"}); err != nil {
@@ -200,14 +196,14 @@ func TestCleanupStaleFileData_RemovesOrphanedSymbols(t *testing.T) {
 	const codebase = "issue-7-orphan"
 	ensureCodebase(t, store, codebase)
 
-	symA1 := Symbol{ID: "a1", CodebaseID: codebase, Name: "Foo", Qualified: "a.Foo", Kind: "function", Filepath: "a.go", LineStart: 1, LineEnd: 5}
-	symA2 := Symbol{ID: "a2", CodebaseID: codebase, Name: "Bar", Qualified: "a.Bar", Kind: "function", Filepath: "a.go", LineStart: 10, LineEnd: 15}
-	symB1 := Symbol{ID: "b1", CodebaseID: codebase, Name: "Baz", Qualified: "b.Baz", Kind: "function", Filepath: "b.go", LineStart: 1, LineEnd: 8}
-	if err := store.UpsertSymbols(ctx, []Symbol{symA1, symA2, symB1}); err != nil {
+	symA1 := postgres.Symbol{ID: "a1", CodebaseID: codebase, Name: "Foo", Qualified: "a.Foo", Kind: "function", Filepath: "a.go", LineStart: 1, LineEnd: 5}
+	symA2 := postgres.Symbol{ID: "a2", CodebaseID: codebase, Name: "Bar", Qualified: "a.Bar", Kind: "function", Filepath: "a.go", LineStart: 10, LineEnd: 15}
+	symB1 := postgres.Symbol{ID: "b1", CodebaseID: codebase, Name: "Baz", Qualified: "b.Baz", Kind: "function", Filepath: "b.go", LineStart: 1, LineEnd: 8}
+	if err := store.UpsertSymbols(ctx, []postgres.Symbol{symA1, symA2, symB1}); err != nil {
 		t.Fatalf("initial UpsertSymbols: %v", err)
 	}
 
-	rels := []Relationship{
+	rels := []postgres.Relationship{
 		{CodebaseID: codebase, SourceID: "b1", TargetID: "a1", Kind: "calls", Filepath: "b.go", Line: 4},
 		{CodebaseID: codebase, SourceID: "a2", TargetID: "a1", Kind: "calls", Filepath: "a.go", Line: 12},
 	}
@@ -238,9 +234,9 @@ func TestCleanupStaleFileData_ScopedToFilepath(t *testing.T) {
 	const codebase = "issue-7-scope"
 	ensureCodebase(t, store, codebase)
 
-	symA := Symbol{ID: "a1", CodebaseID: codebase, Name: "F", Qualified: "a.F", Kind: "function", Filepath: "a.go", LineStart: 1, LineEnd: 5}
-	symB := Symbol{ID: "b1", CodebaseID: codebase, Name: "G", Qualified: "b.G", Kind: "function", Filepath: "b.go", LineStart: 1, LineEnd: 5}
-	if err := store.UpsertSymbols(ctx, []Symbol{symA, symB}); err != nil {
+	symA := postgres.Symbol{ID: "a1", CodebaseID: codebase, Name: "F", Qualified: "a.F", Kind: "function", Filepath: "a.go", LineStart: 1, LineEnd: 5}
+	symB := postgres.Symbol{ID: "b1", CodebaseID: codebase, Name: "G", Qualified: "b.G", Kind: "function", Filepath: "b.go", LineStart: 1, LineEnd: 5}
+	if err := store.UpsertSymbols(ctx, []postgres.Symbol{symA, symB}); err != nil {
 		t.Fatalf("UpsertSymbols: %v", err)
 	}
 
@@ -258,13 +254,14 @@ func TestCleanupStaleFileData_ScopedToFilepath(t *testing.T) {
 	}
 }
 
-func countRelationships(t *testing.T, store *Store, codebase string) int {
+// countRelationships uses the existing GetIndexCounts helper to read the
+// relationships count without needing to reach into the Store's unexported
+// pool field (this test is in package postgres_test).
+func countRelationships(t *testing.T, store *postgres.Store, codebase string) int {
 	t.Helper()
-	var n int
-	if err := store.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM relationships WHERE codebase_id = $1`, codebase,
-	).Scan(&n); err != nil {
+	_, _, rels, err := store.GetIndexCounts(context.Background(), codebase)
+	if err != nil {
 		t.Fatalf("counting relationships: %v", err)
 	}
-	return n
+	return int(rels)
 }
