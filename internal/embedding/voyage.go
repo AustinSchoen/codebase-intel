@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AustinSchoen/codebase-intel/internal/httpretry"
 	"github.com/AustinSchoen/codebase-intel/internal/metrics"
 )
 
@@ -155,7 +156,7 @@ func (c *VoyageClient) embedSingle(ctx context.Context, texts []string) ([][]flo
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
-	resp, err := c.client.Do(req)
+	resp, err := httpretry.Do(ctx, c.client, req, httpretry.Policy{})
 	if err != nil {
 		return nil, fmt.Errorf("sending request: %w", err)
 	}

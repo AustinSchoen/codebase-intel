@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/AustinSchoen/codebase-intel/internal/httpretry"
 )
 
 // Client communicates with a Qdrant instance via REST API.
@@ -274,7 +276,7 @@ func (c *Client) collectionExists(ctx context.Context, name string) (bool, error
 	if c.apiKey != "" {
 		req.Header.Set("api-key", c.apiKey)
 	}
-	resp, err := c.client.Do(req)
+	resp, err := httpretry.Do(ctx, c.client, req, httpretry.Policy{})
 	if err != nil {
 		return false, err
 	}
@@ -306,7 +308,7 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, body inter
 		req.Header.Set("api-key", c.apiKey)
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := httpretry.Do(ctx, c.client, req, httpretry.Policy{})
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
 	}
@@ -340,7 +342,7 @@ func (c *Client) ListCollections(ctx context.Context) ([]string, error) {
 		req.Header.Set("api-key", c.apiKey)
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := httpretry.Do(ctx, c.client, req, httpretry.Policy{})
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +381,7 @@ func (c *Client) CountPoints(ctx context.Context, codebaseName string) (int64, e
 		req.Header.Set("api-key", c.apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpretry.Do(ctx, c.client, req, httpretry.Policy{})
 	if err != nil {
 		return 0, err
 	}
