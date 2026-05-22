@@ -102,26 +102,35 @@ func (s *Server) Run() error {
 	}
 }
 
+// initBackends connects to and validates the required backends. It returns an
+// error for any failure that would leave the server unable to serve its
+// metadata-dependent tools (search_code, get_symbol, list_modules, etc.).
+//
+// Fail-fast is intentional. The previous behavior was to log warnings and
+// continue with `s.store == nil`, which led to silent partial outages — the
+// server returned 200 on /health while half the MCP tools were broken (issue
+// #2). systemd's Restart=on-failure and Docker's restart policy will handle
+// the transient case where Postgres comes up slightly after the server.
 func (s *Server) initBackends(ctx context.Context) error {
 	env, err := s.cfg.ResolveEnv()
 	if err != nil {
-		s.logger.Printf("warning: env resolution failed (backends may be unavailable): %v", err)
-		return nil
+		return fmt.Errorf("resolving env: %w", err)
 	}
 
-	// PostgreSQL
+	// PostgreSQL — required. Without it the metadata-store-backed MCP tools
+	// can't function, so we refuse to start.
 	dsn := s.cfg.PostgresDSN(env)
 	store, err := postgres.NewStore(ctx, dsn, s.cfg.Metadata.MaxConnections)
 	if err != nil {
-		s.logger.Printf("warning: postgres unavailable: %v", err)
-	} else {
-		s.store = store
+		return fmt.Errorf("connecting to postgres: %w", err)
 	}
+	s.store = store
 
-	// Qdrant
+	// Qdrant — NewClient only constructs the HTTP client; connectivity is
+	// validated lazily on first request.
 	s.qdrant = qdrant.NewClient(s.cfg.Vector.URL, s.cfg.Vector.CollectionPrefix, env.VectorAPIKey)
 
-	// Embedder
+	// Embedder — Voyage client construction never fails; requests are lazy.
 	s.embedder = embedding.NewVoyageClient(
 		env.EmbeddingAPIKey,
 		s.cfg.Embedding.Model,
@@ -129,14 +138,14 @@ func (s *Server) initBackends(ctx context.Context) error {
 		s.cfg.Indexing.ConcurrentReqs,
 	)
 
-	// Store summary config for per-codebase generator creation
-	if s.cfg.Summaries.Enabled && env.SummaryAPIKey != "" && s.store != nil {
+	// Summary config (optional — only enabled if both flag and key are set).
+	if s.cfg.Summaries.Enabled && env.SummaryAPIKey != "" {
 		s.summarAPIKey = env.SummaryAPIKey
 		s.summarModel = s.cfg.Summaries.Model
 		s.summarEnabled = true
 	}
 
-	// Reranker
+	// Reranker (optional).
 	if s.cfg.Reranking.Enabled && env.CohereAPIKey != "" {
 		s.reranker = rerank.NewCohereReranker(env.CohereAPIKey, s.cfg.Reranking.Model)
 		s.logger.Println("Cohere reranker enabled")

@@ -70,6 +70,7 @@ func (s *Server) RunHTTP(addr string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", t.handleHealth)
+	mux.HandleFunc("/ready", t.handleReady)
 	mux.HandleFunc("/mcp", t.handleMCP)
 	mux.HandleFunc("/mcp/indexer", t.handleIndexer)
 	mux.HandleFunc("/mcp/indexer/status", t.handleIndexerStatus)
@@ -82,7 +83,8 @@ func (s *Server) RunHTTP(addr string) error {
 	return http.ListenAndServe(addr, mux)
 }
 
-// handleHealth returns a simple health check response.
+// handleHealth is a liveness probe: 200 as long as the HTTP server is up.
+// It does not check backend connectivity — use /ready for that.
 func (t *HTTPTransport) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -90,6 +92,63 @@ func (t *HTTPTransport) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleReady is a readiness probe: 200 only if the Postgres metadata store
+// and the Qdrant vector store are both reachable right now. Returns 503 with
+// a per-backend status object otherwise. Use this for orchestrator readiness
+// gates and load-balancer health checks; use /health for liveness.
+func (t *HTTPTransport) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	type backendStatus struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	result := struct {
+		Ready    bool                     `json:"ready"`
+		Backends map[string]backendStatus `json:"backends"`
+	}{
+		Backends: map[string]backendStatus{},
+	}
+
+	postgresOK := false
+	if t.server.store != nil {
+		if err := t.server.store.Ping(ctx); err != nil {
+			result.Backends["postgres"] = backendStatus{OK: false, Error: err.Error()}
+		} else {
+			result.Backends["postgres"] = backendStatus{OK: true}
+			postgresOK = true
+		}
+	} else {
+		result.Backends["postgres"] = backendStatus{OK: false, Error: "store not initialized"}
+	}
+
+	qdrantOK := false
+	if t.server.qdrant != nil {
+		if err := t.server.qdrant.Healthz(ctx); err != nil {
+			result.Backends["qdrant"] = backendStatus{OK: false, Error: err.Error()}
+		} else {
+			result.Backends["qdrant"] = backendStatus{OK: true}
+			qdrantOK = true
+		}
+	} else {
+		result.Backends["qdrant"] = backendStatus{OK: false, Error: "qdrant client not initialized"}
+	}
+
+	result.Ready = postgresOK && qdrantOK
+
+	w.Header().Set("Content-Type", "application/json")
+	if !result.Ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 // handleMCP dispatches to POST (JSON-RPC) or GET (SSE) handlers.
