@@ -88,30 +88,32 @@ if [ -z "$SERVER_URL" ]; then
     fi
   else
     if [ "$SERVICE_COUNT" = "1" ]; then
+      # Python f-strings disallow backslash escapes inside the expression,
+      # so use single quotes for dict subscripts: svc['URL'] not svc[\"URL\"].
       eval "$(echo "$DISCOVERY_JSON" | python3 -c '
-import json,sys,shlex
+import json, sys, shlex
 svc = json.load(sys.stdin)["services"][0]
-print(f"DISCOVERED_URL={shlex.quote(svc[\"URL\"])}")
-print(f"DISCOVERED_TOKEN={shlex.quote(svc.get(\"Token\",\"\"))}")
-print(f"DISCOVERED_NAME={shlex.quote(svc.get(\"InstanceName\",\"\"))}")
+print("DISCOVERED_URL=" + shlex.quote(svc["URL"]))
+print("DISCOVERED_TOKEN=" + shlex.quote(svc.get("Token", "")))
+print("DISCOVERED_NAME=" + shlex.quote(svc.get("InstanceName", "")))
 ')"
       echo "Found: $DISCOVERED_NAME at $DISCOVERED_URL"
     else
       echo "Multiple servers responded:"
       echo "$DISCOVERY_JSON" | python3 -c '
-import json,sys
-for i,svc in enumerate(json.load(sys.stdin).get("services",[])):
-    print(f"  [{i+1}] {svc.get(\"InstanceName\",\"?\")} → {svc[\"URL\"]}")
+import json, sys
+for i, svc in enumerate(json.load(sys.stdin).get("services", [])):
+    print("  [" + str(i+1) + "] " + svc.get("InstanceName", "?") + " -> " + svc["URL"])
 '
       read -rp "Select [1-$SERVICE_COUNT]: " choice
-      eval "$(echo "$DISCOVERY_JSON" | python3 -c "
-import json,sys,shlex
-i = int('$choice') - 1
-svc = json.load(sys.stdin)['services'][i]
-print(f'DISCOVERED_URL={shlex.quote(svc[\"URL\"])}')
-print(f'DISCOVERED_TOKEN={shlex.quote(svc.get(\"Token\",\"\"))}')
-print(f'DISCOVERED_NAME={shlex.quote(svc.get(\"InstanceName\",\"\"))}')
-")"
+      eval "$(echo "$DISCOVERY_JSON" | CHOICE="$choice" python3 -c '
+import json, os, sys, shlex
+i = int(os.environ["CHOICE"]) - 1
+svc = json.load(sys.stdin)["services"][i]
+print("DISCOVERED_URL=" + shlex.quote(svc["URL"]))
+print("DISCOVERED_TOKEN=" + shlex.quote(svc.get("Token", "")))
+print("DISCOVERED_NAME=" + shlex.quote(svc.get("InstanceName", "")))
+')"
     fi
 
     SERVER_URL="$DISCOVERED_URL"
