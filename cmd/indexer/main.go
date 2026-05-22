@@ -113,10 +113,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error: -server-url is required. Use http://localhost:8090 if the server is on this host.")
 		os.Exit(1)
 	}
+	// Fall back to $MCP_API_KEY if -server-key wasn't passed explicitly. This
+	// is what setup-indexer.sh sets in the service file's environment, so the
+	// daemon command line doesn't need to carry the token directly.
 	if *serverKey == "" {
-		// Tolerate empty token for setups that disable auth, but warn —
-		// almost all real deployments will need one.
-		fmt.Fprintln(os.Stderr, "warning: -server-key is empty; requests will be sent without an Authorization header")
+		*serverKey = os.Getenv("MCP_API_KEY")
+	}
+	if *serverKey == "" {
+		fmt.Fprintln(os.Stderr, "warning: -server-key and MCP_API_KEY both empty; requests will be sent without an Authorization header")
 	}
 
 	// Build one Client per config. Reject duplicate codebase names — the
