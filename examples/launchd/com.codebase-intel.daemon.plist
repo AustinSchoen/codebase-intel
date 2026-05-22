@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd user agent for the codebase-intel indexer daemon.
+
+  Edit the three TEMPLATE placeholders, then install:
+
+    cp examples/launchd/com.codebase-intel.daemon.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.codebase-intel.daemon.plist
+
+  The setup-indexer.sh script generates this file with the right paths
+  already substituted — use that for the common case.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.codebase-intel.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>TEMPLATE_HOME/bin/codebase-intel-indexer</string>
+      <string>-daemon</string>
+      <string>-config-dir</string>
+      <string>TEMPLATE_HOME/.config/codebase-intel/codebases.d</string>
+      <string>-server-url</string>
+      <string>TEMPLATE_SERVER_URL</string>
+      <string>-node-id</string>
+      <string>TEMPLATE_HOSTNAME</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>MCP_API_KEY</key>
+      <string>TEMPLATE_TOKEN</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>TEMPLATE_HOME/Library/Logs/codebase-intel-daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>TEMPLATE_HOME/Library/Logs/codebase-intel-daemon.log</string>
+  </dict>
+</plist>

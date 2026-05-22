@@ -1,0 +1,24 @@
+# systemd --user unit for the codebase-intel indexer daemon.
+#
+# Edit the three TEMPLATE placeholders, then install:
+#
+#   cp examples/systemd/codebase-intel-daemon.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now codebase-intel-daemon
+#
+# The setup-indexer.sh script generates this file with the right paths
+# already substituted — use that for the common case.
+
+[Unit]
+Description=codebase-intel indexer daemon
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/codebase-intel/credentials.env
+ExecStart=%h/bin/codebase-intel-indexer -daemon -config-dir %h/.config/codebase-intel/codebases.d -server-url TEMPLATE_SERVER_URL -node-id %H
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=default.target
