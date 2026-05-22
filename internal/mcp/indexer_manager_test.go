@@ -51,6 +51,86 @@ func TestRegisterNode(t *testing.T) {
 	}
 }
 
+// Regression test for issue #4: two daemons on the same host registering with
+// the same node ID but different codebases must not overwrite each other.
+// Before the (nodeID, codebase) keying, the second RegisterNode call silently
+// dropped the first daemon from the map.
+func TestRegisterNode_SameNodeIDDifferentCodebasesNoCollision(t *testing.T) {
+	mgr := NewIndexerManager(newTestLogger())
+
+	chA := make(chan []byte, 10)
+	chB := make(chan []byte, 10)
+	mgr.RegisterNode("ams-mbp", []string{"azimuth"}, chA)
+	mgr.RegisterNode("ams-mbp", []string{"lumina-app"}, chB)
+
+	nodes := mgr.GetNodes()
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 distinct daemons, got %d", len(nodes))
+	}
+
+	// Both codebases must resolve to a node.
+	if mgr.GetNodeForCodebase("azimuth") == nil {
+		t.Error("expected node for codebase 'azimuth' after collision-causing registration")
+	}
+	if mgr.GetNodeForCodebase("lumina-app") == nil {
+		t.Error("expected node for codebase 'lumina-app' after collision-causing registration")
+	}
+
+	// Each codebase resolves to its own SSE channel.
+	azimuthNode := mgr.GetNodeForCodebase("azimuth")
+	luminaNode := mgr.GetNodeForCodebase("lumina-app")
+	if azimuthNode == luminaNode {
+		t.Error("expected separate IndexerNode structs for the two registrations")
+	}
+	if azimuthNode.SSEChan != chA {
+		t.Error("azimuth registration's SSE channel was not preserved")
+	}
+	if luminaNode.SSEChan != chB {
+		t.Error("lumina-app registration's SSE channel was not preserved")
+	}
+
+	// Deregistering by nodeID alone removes BOTH entries (matches the daemon-
+	// gone semantics — there's no per-codebase deregister API today).
+	mgr.DeregisterNode("ams-mbp")
+	if got := len(mgr.GetNodes()); got != 0 {
+		t.Errorf("expected 0 nodes after deregister, got %d", got)
+	}
+}
+
+// One daemon serving multiple codebases (the per-host design from issue #3)
+// shares a single IndexerNode and a single SSE channel across codebases.
+func TestRegisterNode_SingleDaemonMultipleCodebasesSharesChannel(t *testing.T) {
+	mgr := NewIndexerManager(newTestLogger())
+
+	ch := make(chan []byte, 10)
+	mgr.RegisterNode("ams-mbp", []string{"azimuth", "lumina-app"}, ch)
+
+	// GetNodes dedupes by IndexerNode pointer, so the caller sees one daemon.
+	nodes := mgr.GetNodes()
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 deduped daemon, got %d", len(nodes))
+	}
+
+	// Both codebases resolve to the same IndexerNode.
+	a := mgr.GetNodeForCodebase("azimuth")
+	b := mgr.GetNodeForCodebase("lumina-app")
+	if a == nil || b == nil {
+		t.Fatal("expected both codebases to resolve to a node")
+	}
+	if a != b {
+		t.Error("expected the same IndexerNode pointer for both codebases of one daemon")
+	}
+
+	// Deregister removes both entries and closes the channel once.
+	mgr.DeregisterNode("ams-mbp")
+	if got := len(mgr.GetNodes()); got != 0 {
+		t.Errorf("expected 0 nodes after deregister, got %d", got)
+	}
+	if _, ok := <-ch; ok {
+		t.Error("expected shared SSE channel to be closed")
+	}
+}
+
 func TestDeregisterNode(t *testing.T) {
 	mgr := NewIndexerManager(newTestLogger())
 
