@@ -69,7 +69,12 @@ func NewClient(cfg *config.Config, serverURL, serverToken string, logger *log.Lo
 		cfg:         cfg,
 		serverURL:   strings.TrimRight(serverURL, "/"),
 		serverToken: serverToken,
-		httpClient:  &http.Client{Timeout: 60 * time.Second},
+		// File-upload batches drive server-side parse + chunk + embed (Voyage
+		// round trip) + insert, which can take a couple of minutes for a
+		// 64-file batch of a moderately busy codebase. The retry helper
+		// already handles transient blips, so this is for "the server is
+		// genuinely working" rather than "the server is unreachable."
+		httpClient: &http.Client{Timeout: 10 * time.Minute},
 		logger:      logger,
 	}
 }
