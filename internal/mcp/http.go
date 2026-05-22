@@ -90,6 +90,11 @@ func (s *Server) RunHTTP(addr string) error {
 	mux.HandleFunc("/mcp/indexer", t.handleIndexer)
 	mux.HandleFunc("/mcp/indexer/status", t.handleIndexerStatus)
 	mux.HandleFunc("/mcp/indexer/nodes", t.handleIndexerNodes)
+	// Thin-client indexer endpoints (issue #18). Daemons POST file content;
+	// server runs the pipeline.
+	mux.HandleFunc("/mcp/indexer/files", t.handleIndexerFiles)
+	mux.HandleFunc("/mcp/indexer/gc", t.handleIndexerGC)
+	mux.HandleFunc("/mcp/indexer/delete", t.handleIndexerDelete)
 
 	// Dashboard and API routes (no auth required)
 	t.registerDashboardRoutes(mux)

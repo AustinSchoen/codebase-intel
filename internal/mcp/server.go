@@ -9,11 +9,14 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AustinSchoen/codebase-intel/internal/config"
 	"github.com/AustinSchoen/codebase-intel/internal/embedding"
 	"github.com/AustinSchoen/codebase-intel/internal/metrics"
+	"github.com/AustinSchoen/codebase-intel/internal/migrations"
+	"github.com/AustinSchoen/codebase-intel/internal/pipeline"
 	"github.com/AustinSchoen/codebase-intel/internal/rerank"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/postgres"
 	"github.com/AustinSchoen/codebase-intel/internal/storage/qdrant"
@@ -53,7 +56,14 @@ type Server struct {
 	summarAPIKey  string // stored for per-codebase generator creation
 	summarModel   string
 	summarEnabled bool
-	indexerMgr    *IndexerManager // set in HTTP mode for reindex tools
+	indexerMgr    *IndexerManager  // set in HTTP mode for reindex tools
+	pipeline      *pipeline.Pipeline // server-side indexing pipeline (thin-client architecture, issue #18)
+
+	// indexerRelBuffers groups raw relationships from in-flight indexing
+	// requests by request_id, so cross-file rels can resolve against symbols
+	// added later in the same pass.
+	indexerRelBuffersMu sync.Mutex
+	indexerRelBuffers   map[string]*pipeline.RelBuffer
 }
 
 // NewServer creates a new MCP server.
@@ -126,6 +136,14 @@ func (s *Server) initBackends(ctx context.Context) error {
 	}
 	s.store = store
 
+	// Apply schema migrations from the embedded migrations dir. Idempotent —
+	// safe to run on every startup. The indexer used to do this via a
+	// -migrate flag (now removed in #18), but it can't anymore in the
+	// thin-client world since it has no DB connection.
+	if err := migrations.Run(ctx, s.store); err != nil {
+		return fmt.Errorf("applying migrations: %w", err)
+	}
+
 	// Qdrant — NewClient only constructs the HTTP client; connectivity is
 	// validated lazily on first request.
 	s.qdrant = qdrant.NewClient(s.cfg.Vector.URL, s.cfg.Vector.CollectionPrefix, env.VectorAPIKey)
@@ -150,6 +168,15 @@ func (s *Server) initBackends(ctx context.Context) error {
 		s.reranker = rerank.NewCohereReranker(env.CohereAPIKey, s.cfg.Reranking.Model)
 		s.logger.Println("Cohere reranker enabled")
 	}
+
+	// Indexing pipeline — the server now owns parse/chunk/embed/store and
+	// exposes it via /mcp/indexer/* for thin-client daemons (issue #18).
+	pl, err := pipeline.New(s.cfg.Indexing, s.cfg.Embedding, s.store, s.qdrant, s.embedder, s.logger)
+	if err != nil {
+		return fmt.Errorf("constructing indexing pipeline: %w", err)
+	}
+	s.pipeline = pl
+	s.indexerRelBuffers = make(map[string]*pipeline.RelBuffer)
 
 	return nil
 }
