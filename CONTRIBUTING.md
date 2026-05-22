@@ -16,10 +16,20 @@ git clone https://github.com/AustinSchoen/codebase-intel.git
 cd codebase-intel
 ./setup.sh        # starts Qdrant + Postgres, generates .env, builds the indexer
 go build ./...    # build everything
-go test ./...     # run the test suite
+go test ./...     # run the unit test suite
 ```
 
 `setup.sh` prompts for your Voyage key once and auto-generates the rest. See [`.env.example`](.env.example) for the full list of environment variables.
+
+### Integration tests
+
+Integration tests spin up an isolated Postgres container per test via [testcontainers-go](https://golang.testcontainers.org/) and exercise the real storage layer. They're gated behind a build tag so the default `go test ./...` stays fast and dependency-free:
+
+```bash
+go test -tags=integration ./...
+```
+
+Requires a working Docker (or Podman with the Docker-API socket — `systemctl --user start podman.socket` and `export DOCKER_HOST="unix:///run/user/$UID/podman/podman.sock"` on Fedora/RHEL hosts). CI runs them on every PR.
 
 ## Project layout
 
