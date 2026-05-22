@@ -114,17 +114,10 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# ── Run migrations ─────────────────────────────────────────────
-
-echo
-echo "Running database migrations..."
-# shellcheck disable=SC1091
-source .env
-export VOYAGE_API_KEY CI_PG_USER CI_PG_PASSWORD QDRANT_API_KEY
-
-./bin/codebase-intel-indexer \
-  -config configs/example-codebase.yaml \
-  -migrate
+# ── Migrations ─────────────────────────────────────────────────
+#
+# Migrations are now embedded in the server binary (#18) and applied
+# automatically on startup. Nothing to do here.
 
 # ── Done ───────────────────────────────────────────────────────
 

@@ -1,28 +1,39 @@
 -- 001_initial_schema.sql
--- Core schema for Codebase Intelligence MCP Server
+-- Core schema for Codebase Intelligence MCP Server.
+--
+-- All statements are written to be idempotent so the server can apply
+-- migrations on every startup without tracking applied versions. Re-running
+-- this file against a populated database is a no-op.
 
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS btree_gin;
 
--- Enum types
-CREATE TYPE symbol_kind AS ENUM (
-    'function', 'method', 'class', 'struct', 'enum',
-    'macro', 'typedef', 'namespace', 'variable', 'field'
-);
+-- Enum types. PostgreSQL doesn't support CREATE TYPE IF NOT EXISTS, so we
+-- wrap each in a DO block that swallows the duplicate_object exception.
+DO $$ BEGIN
+    CREATE TYPE symbol_kind AS ENUM (
+        'function', 'method', 'class', 'struct', 'enum',
+        'macro', 'typedef', 'namespace', 'variable', 'field'
+    );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE relationship_kind AS ENUM (
-    'calls', 'inherits', 'includes', 'overrides',
-    'references', 'implements', 'instantiates', 'contains'
-);
+DO $$ BEGIN
+    CREATE TYPE relationship_kind AS ENUM (
+        'calls', 'inherits', 'includes', 'overrides',
+        'references', 'implements', 'instantiates', 'contains'
+    );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE summary_level AS ENUM ('module', 'class', 'subsystem');
+DO $$ BEGIN
+    CREATE TYPE summary_level AS ENUM ('module', 'class', 'subsystem');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ============================================================
 -- Core tables
 -- ============================================================
 
-CREATE TABLE codebases (
+CREATE TABLE IF NOT EXISTS codebases (
     id          TEXT PRIMARY KEY,
     root_path   TEXT NOT NULL,
     display_name TEXT,
@@ -30,7 +41,7 @@ CREATE TABLE codebases (
     config      JSONB DEFAULT '{}'
 );
 
-CREATE TABLE symbols (
+CREATE TABLE IF NOT EXISTS symbols (
     id          TEXT PRIMARY KEY,
     codebase_id TEXT NOT NULL REFERENCES codebases(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
@@ -48,7 +59,7 @@ CREATE TABLE symbols (
     updated_at  TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE relationships (
+CREATE TABLE IF NOT EXISTS relationships (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     codebase_id TEXT NOT NULL REFERENCES codebases(id) ON DELETE CASCADE,
     source_id   TEXT NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
@@ -59,7 +70,7 @@ CREATE TABLE relationships (
     UNIQUE(source_id, target_id, kind)
 );
 
-CREATE TABLE summaries (
+CREATE TABLE IF NOT EXISTS summaries (
     id          TEXT PRIMARY KEY,
     codebase_id TEXT NOT NULL REFERENCES codebases(id) ON DELETE CASCADE,
     scope       TEXT NOT NULL,
@@ -73,7 +84,7 @@ CREATE TABLE summaries (
     UNIQUE(codebase_id, scope, level)
 );
 
-CREATE TABLE file_state (
+CREATE TABLE IF NOT EXISTS file_state (
     codebase_id TEXT NOT NULL REFERENCES codebases(id) ON DELETE CASCADE,
     filepath    TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -82,7 +93,7 @@ CREATE TABLE file_state (
     PRIMARY KEY (codebase_id, filepath)
 );
 
-CREATE TABLE chunks (
+CREATE TABLE IF NOT EXISTS chunks (
     id          TEXT PRIMARY KEY,
     codebase_id TEXT NOT NULL REFERENCES codebases(id) ON DELETE CASCADE,
     symbol_id   TEXT REFERENCES symbols(id) ON DELETE SET NULL,
@@ -99,39 +110,39 @@ CREATE TABLE chunks (
 -- Indexes
 -- ============================================================
 
-CREATE INDEX idx_symbols_codebase ON symbols(codebase_id);
-CREATE INDEX idx_symbols_module ON symbols(codebase_id, module);
-CREATE INDEX idx_symbols_kind ON symbols(codebase_id, kind);
-CREATE INDEX idx_symbols_parent ON symbols(parent_id);
-CREATE INDEX idx_symbols_qualified ON symbols(qualified);
+CREATE INDEX IF NOT EXISTS idx_symbols_codebase ON symbols(codebase_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_module ON symbols(codebase_id, module);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(codebase_id, kind);
+CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_qualified ON symbols(qualified);
 
 -- Trigram indexes for fuzzy symbol name search
-CREATE INDEX idx_symbols_name_trgm ON symbols USING gin (name gin_trgm_ops);
-CREATE INDEX idx_symbols_qualified_trgm ON symbols USING gin (qualified gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_symbols_name_trgm ON symbols USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_symbols_qualified_trgm ON symbols USING gin (qualified gin_trgm_ops);
 
 -- Full-text search on doc comments
-CREATE INDEX idx_symbols_doc_fts ON symbols USING gin (
+CREATE INDEX IF NOT EXISTS idx_symbols_doc_fts ON symbols USING gin (
     to_tsvector('english', COALESCE(doc_comment, ''))
 );
 
 -- Relationship graph traversal
-CREATE INDEX idx_rel_source ON relationships(source_id, kind);
-CREATE INDEX idx_rel_target ON relationships(target_id, kind);
-CREATE INDEX idx_rel_codebase ON relationships(codebase_id);
+CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id, kind);
+CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_id, kind);
+CREATE INDEX IF NOT EXISTS idx_rel_codebase ON relationships(codebase_id);
 
 -- File state lookups
-CREATE INDEX idx_file_state_hash ON file_state(content_hash);
+CREATE INDEX IF NOT EXISTS idx_file_state_hash ON file_state(content_hash);
 
 -- Chunk lookups
-CREATE INDEX idx_chunks_codebase ON chunks(codebase_id);
-CREATE INDEX idx_chunks_filepath ON chunks(codebase_id, filepath);
-CREATE INDEX idx_chunks_symbol ON chunks(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_codebase ON chunks(codebase_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_filepath ON chunks(codebase_id, filepath);
+CREATE INDEX IF NOT EXISTS idx_chunks_symbol ON chunks(symbol_id);
 
 -- ============================================================
 -- Materialized views
 -- ============================================================
 
-CREATE MATERIALIZED VIEW symbol_importance AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS symbol_importance AS
 SELECT
     s.id,
     s.qualified,
@@ -146,9 +157,9 @@ LEFT JOIN relationships r2 ON r2.source_id = s.id
 GROUP BY s.id, s.qualified, s.kind, s.module, s.codebase_id
 ORDER BY incoming_refs DESC;
 
-CREATE UNIQUE INDEX idx_symbol_importance_id ON symbol_importance(id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_symbol_importance_id ON symbol_importance(id);
 
-CREATE MATERIALIZED VIEW module_stats AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS module_stats AS
 SELECT
     codebase_id,
     module,
@@ -161,4 +172,4 @@ FROM symbols
 WHERE module IS NOT NULL
 GROUP BY codebase_id, module;
 
-CREATE UNIQUE INDEX idx_module_stats ON module_stats(codebase_id, module);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_module_stats ON module_stats(codebase_id, module);

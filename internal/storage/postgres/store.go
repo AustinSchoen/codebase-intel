@@ -48,6 +48,14 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
+// Exec runs a raw SQL statement (or multi-statement bundle) against the
+// connection pool. Used by the embedded-migrations runner; callers should
+// ensure the SQL is idempotent if it may run more than once.
+func (s *Store) Exec(ctx context.Context, sql string) error {
+	_, err := s.pool.Exec(ctx, sql)
+	return err
+}
+
 // RunMigrations executes all .sql files in migrationsDir in lexical order.
 func (s *Store) RunMigrations(ctx context.Context, migrationsDir string) error {
 	entries, err := os.ReadDir(migrationsDir)

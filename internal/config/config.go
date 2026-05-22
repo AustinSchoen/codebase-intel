@@ -204,8 +204,14 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// Validate checks that required fields are present and values are sane.
-// Used by the indexer which requires full codebase config.
+// Validate checks codebase-config fields that the (now thin-client) indexer
+// daemon cares about: codebase identity and the walk parameters. Storage
+// (vector_store, metadata_store) and embedding configs are server-only since
+// #18 and are not validated here — the indexer ignores them if present.
+//
+// The chunking knobs (chunk_max_lines, batch_size, etc.) likewise moved
+// server-side; only `incremental` survives as an indexer-side flag because
+// the daemon controls the per-request incremental bit it sends to the server.
 func (c *Config) Validate() error {
 	var errs []string
 
@@ -222,30 +228,6 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Codebase.Languages) == 0 {
 		errs = append(errs, "codebase.languages must have at least one language")
-	}
-
-	if c.Indexing.ChunkMaxLines < 10 {
-		errs = append(errs, "indexing.chunk_max_lines must be >= 10")
-	}
-	if c.Indexing.ChunkOverlapLines >= c.Indexing.ChunkMaxLines {
-		errs = append(errs, "indexing.chunk_overlap_lines must be < chunk_max_lines")
-	}
-	if c.Indexing.BatchSize < 1 || c.Indexing.BatchSize > 128 {
-		errs = append(errs, "indexing.batch_size must be 1-128")
-	}
-	if c.Indexing.ConcurrentReqs < 1 || c.Indexing.ConcurrentReqs > 50 {
-		errs = append(errs, "indexing.concurrent_requests must be 1-50")
-	}
-
-	if c.Vector.URL == "" {
-		errs = append(errs, "vector_store.url is required")
-	}
-
-	if c.Metadata.Host == "" {
-		errs = append(errs, "metadata_store.host is required")
-	}
-	if c.Metadata.Database == "" {
-		errs = append(errs, "metadata_store.database is required")
 	}
 
 	if len(errs) > 0 {

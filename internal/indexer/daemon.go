@@ -37,33 +37,33 @@ type Daemon struct {
 	cfg    DaemonConfig
 	logger interface{ Printf(string, ...interface{}) }
 
-	// indexers maps codebase name -> *Indexer. Codebase names must be unique;
+	// clients maps codebase name -> *Indexer. Codebase names must be unique;
 	// the constructor of the daemon (cmd/indexer/main.go) enforces this.
-	indexers map[string]*Indexer
+	clients map[string]*Client
 }
 
 // NewDaemon creates a daemon that serves the given indexers. The map key is
 // expected to match each indexer's cfg.Codebase.Name; the caller guarantees
 // no duplicates.
-func NewDaemon(indexers map[string]*Indexer, cfg DaemonConfig) *Daemon {
+func NewDaemon(clients map[string]*Client, cfg DaemonConfig) *Daemon {
 	// Pick any indexer's logger — they all use the package default.
 	var logger interface{ Printf(string, ...interface{}) }
-	for _, idx := range indexers {
-		logger = idx.logger
+	for _, c := range clients {
+		logger = c.logger
 		break
 	}
 	return &Daemon{
 		cfg:      cfg,
 		logger:   logger,
-		indexers: indexers,
+		clients: clients,
 	}
 }
 
 // codebases returns the sorted list of codebase names served by this daemon.
 // Sorted so registration log lines and the SSE URL are deterministic.
 func (d *Daemon) codebases() []string {
-	names := make([]string, 0, len(d.indexers))
-	for name := range d.indexers {
+	names := make([]string, 0, len(d.clients))
+	for name := range d.clients {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -90,9 +90,9 @@ func (d *Daemon) Run() error {
 	// load on Voyage/Qdrant; multi-codebase indexing is rare enough that
 	// going parallel isn't worth the rate-limit risk.
 	for _, name := range d.codebases() {
-		idx := d.indexers[name]
+		client := d.clients[name]
 		d.logger.Printf("running initial index for codebase: %s", name)
-		if err := idx.fullIndex(ctx); err != nil {
+		if err := client.FullIndex(ctx); err != nil {
 			d.logger.Printf("warning: initial index for %s failed: %v", name, err)
 		}
 	}
@@ -101,7 +101,7 @@ func (d *Daemon) Run() error {
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	defer watchCancel()
 	for _, name := range d.codebases() {
-		cw := newCodebaseWatcher(d, name, d.indexers[name])
+		cw := newCodebaseWatcher(d, name, d.clients[name])
 		go cw.run(watchCtx)
 	}
 
@@ -237,37 +237,37 @@ func (d *Daemon) handleSSEEvent(ctx context.Context, data []byte) {
 // serializes via the indexer's reindexMu so two concurrent commands for the
 // same codebase don't race.
 func (d *Daemon) dispatchReindex(ctx context.Context, codebase string, full bool, requestID string) bool {
-	idx, ok := d.indexers[codebase]
+	client, ok := d.clients[codebase]
 	if !ok {
 		d.logger.Printf("warning: reindex requested for unknown codebase %q (daemon serves %v)",
 			codebase, d.codebases())
 		return false
 	}
-	go d.handleReindex(ctx, idx, full, requestID)
+	go d.handleReindex(ctx, client, full, requestID)
 	return true
 }
 
-// handleReindex performs a reindex of the given indexer and reports progress.
-// Serialized per indexer via idx.reindexMu so a watcher-triggered reindex and
+// handleReindex performs a reindex via the given client and reports progress.
+// Serialized per client via client.reindexMu so a watcher-triggered reindex and
 // an MCP-triggered one for the same codebase don't race.
-func (d *Daemon) handleReindex(ctx context.Context, idx *Indexer, full bool, requestID string) {
-	idx.reindexMu.Lock()
-	defer idx.reindexMu.Unlock()
+func (d *Daemon) handleReindex(ctx context.Context, client *Client, full bool, requestID string) {
+	client.reindexMu.Lock()
+	defer client.reindexMu.Unlock()
 
-	codebase := idx.cfg.Codebase.Name
+	codebase := client.cfg.Codebase.Name
 
-	prevIncremental := idx.cfg.Indexing.Incremental
+	prevIncremental := client.cfg.Indexing.Incremental
 	if full {
-		idx.cfg.Indexing.Incremental = false
+		client.cfg.Indexing.Incremental = false
 	}
 
 	d.reportStatus(codebase, requestID, "started", 0, 0, 0, 0, 0, "")
 
 	startTime := time.Now()
-	err := idx.fullIndex(ctx)
+	err := client.FullIndex(ctx)
 	durationMs := time.Since(startTime).Milliseconds()
 
-	idx.cfg.Indexing.Incremental = prevIncremental
+	client.cfg.Indexing.Incremental = prevIncremental
 
 	if err != nil {
 		d.logger.Printf("reindex error for %s: %v", codebase, err)
@@ -328,18 +328,18 @@ func (d *Daemon) reportStatus(codebase, requestID, status string, filesTotal, fi
 type codebaseWatcher struct {
 	d        *Daemon
 	codebase string
-	idx      *Indexer
+	client   *Client
 
 	mu            sync.Mutex
 	pendingFiles  map[string]fsnotify.Op
 	debounceTimer *time.Timer
 }
 
-func newCodebaseWatcher(d *Daemon, codebase string, idx *Indexer) *codebaseWatcher {
+func newCodebaseWatcher(d *Daemon, codebase string, client *Client) *codebaseWatcher {
 	return &codebaseWatcher{
 		d:            d,
 		codebase:     codebase,
-		idx:          idx,
+		client:       client,
 		pendingFiles: make(map[string]fsnotify.Op),
 	}
 }
@@ -352,13 +352,13 @@ func (cw *codebaseWatcher) run(ctx context.Context) {
 	}
 	defer watcher.Close()
 
-	sw := &smartWatcher{idx: cw.idx, watcher: watcher, pending: make(map[string]fsnotify.Op), windowStart: time.Now()}
+	sw := &smartWatcher{client: cw.client, watcher: watcher, pending: make(map[string]fsnotify.Op), windowStart: time.Now()}
 	if err := sw.addDirectories(); err != nil {
 		cw.d.logger.Printf("failed to add watch directories for %s: %v", cw.codebase, err)
 		return
 	}
 
-	cw.d.logger.Printf("file watcher started for %s (%s)", cw.codebase, cw.idx.cfg.Codebase.Path)
+	cw.d.logger.Printf("file watcher started for %s (%s)", cw.codebase, cw.client.cfg.Codebase.Path)
 
 	const debounceDelay = 3 * time.Second
 
@@ -407,8 +407,8 @@ func (cw *codebaseWatcher) processBatch(ctx context.Context) {
 	cw.mu.Unlock()
 
 	// Serialize with MCP-triggered reindexes for the same indexer.
-	cw.idx.reindexMu.Lock()
-	defer cw.idx.reindexMu.Unlock()
+	cw.client.reindexMu.Lock()
+	defer cw.client.reindexMu.Unlock()
 
 	cw.d.logger.Printf("processing %d file change events for %s", len(batch), cw.codebase)
 
@@ -416,37 +416,30 @@ func (cw *codebaseWatcher) processBatch(ctx context.Context) {
 	cw.d.reportStatus(cw.codebase, requestID, "started", len(batch), 0, 0, 0, 0, "")
 
 	startTime := time.Now()
-	var indexed, skipped int
+	var indexed int
 
 	for path, op := range batch {
 		if op&(fsnotify.Remove|fsnotify.Rename) != 0 {
-			relPath, _ := cw.idx.relPath(path)
-			if err := cw.idx.store.DeleteFileData(ctx, cw.codebase, relPath); err != nil {
-				cw.d.logger.Printf("error cleaning up %s: %v", relPath, err)
-			}
-			if err := cw.idx.qdrant.DeleteByFilter(ctx, cw.codebase, relPath); err != nil {
-				cw.d.logger.Printf("error deleting vectors for %s: %v", relPath, err)
+			if err := cw.client.DeleteFile(ctx, path); err != nil {
+				cw.d.logger.Printf("error deleting %s on server: %v", path, err)
 			}
 			continue
 		}
 
 		if op&(fsnotify.Write|fsnotify.Create) != 0 {
-			lang := cw.idx.detectLanguage(path)
+			lang := cw.client.DetectLanguage(path)
 			if lang != "" {
-				changed, _, err := cw.idx.indexFile(ctx, path)
-				if err != nil {
-					cw.d.logger.Printf("error re-indexing %s: %v", path, err)
-				} else if changed {
-					indexed++
+				if err := cw.client.IndexSingleFile(ctx, path); err != nil {
+					cw.d.logger.Printf("error uploading %s: %v", path, err)
 				} else {
-					skipped++
+					indexed++
 				}
 			}
 		}
 	}
 
 	durationMs := time.Since(startTime).Milliseconds()
-	cw.d.logger.Printf("watch batch for %s complete: %d indexed, %d skipped in %dms",
-		cw.codebase, indexed, skipped, durationMs)
-	cw.d.reportStatus(cw.codebase, requestID, "complete", len(batch), indexed+skipped, indexed, skipped, durationMs, "")
+	cw.d.logger.Printf("watch batch for %s complete: %d uploaded in %dms",
+		cw.codebase, indexed, durationMs)
+	cw.d.reportStatus(cw.codebase, requestID, "complete", len(batch), indexed, indexed, 0, durationMs, "")
 }

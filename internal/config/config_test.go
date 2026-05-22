@@ -121,6 +121,9 @@ metadata_store:
 	}
 }
 
+// TestValidation_MissingRequired covers the codebase-identity fields the
+// indexer still validates after #18. Storage/embedding requirements moved
+// to ValidateForServer (server-only now), tested elsewhere.
 func TestValidation_MissingRequired(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -129,28 +132,18 @@ func TestValidation_MissingRequired(t *testing.T) {
 	}{
 		{
 			name:    "missing codebase path",
-			yaml:    "codebase:\n  name: test\n  languages: [go]\nvector_store:\n  url: http://localhost\nmetadata_store:\n  host: localhost\n  database: db",
+			yaml:    "codebase:\n  name: test\n  languages: [go]",
 			errText: "codebase.path is required",
 		},
 		{
 			name:    "missing codebase name",
-			yaml:    "codebase:\n  path: /tmp\n  languages: [go]\nvector_store:\n  url: http://localhost\nmetadata_store:\n  host: localhost\n  database: db",
+			yaml:    "codebase:\n  path: /tmp\n  languages: [go]",
 			errText: "codebase.name is required",
 		},
 		{
 			name:    "missing languages",
-			yaml:    "codebase:\n  path: /tmp\n  name: test\nvector_store:\n  url: http://localhost\nmetadata_store:\n  host: localhost\n  database: db",
+			yaml:    "codebase:\n  path: /tmp\n  name: test",
 			errText: "codebase.languages must have at least one language",
-		},
-		{
-			name:    "missing vector url",
-			yaml:    "codebase:\n  path: /tmp\n  name: test\n  languages: [go]\nmetadata_store:\n  host: localhost\n  database: db",
-			errText: "vector_store.url is required",
-		},
-		{
-			name:    "missing metadata host",
-			yaml:    "codebase:\n  path: /tmp\n  name: test\n  languages: [go]\nvector_store:\n  url: http://localhost\nmetadata_store:\n  database: db",
-			errText: "metadata_store.host is required",
 		},
 	}
 
@@ -170,36 +163,6 @@ func TestValidation_MissingRequired(t *testing.T) {
 				t.Errorf("expected error containing %q, got %q", tt.errText, err.Error())
 			}
 		})
-	}
-}
-
-func TestValidation_BadValues(t *testing.T) {
-	// batch_size > 128
-	yaml := `
-codebase:
-  path: /tmp
-  name: test
-  languages: [go]
-indexing:
-  batch_size: 200
-vector_store:
-  url: http://localhost
-metadata_store:
-  host: localhost
-  database: db
-`
-	tmpDir := t.TempDir()
-	cfgPath := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := LoadFromFile(cfgPath)
-	if err == nil {
-		t.Fatal("expected validation error for batch_size > 128")
-	}
-	if !strings.Contains(err.Error(), "batch_size") {
-		t.Errorf("expected batch_size error, got %q", err.Error())
 	}
 }
 
@@ -394,98 +357,17 @@ func TestLoadFromFile_NonexistentFile(t *testing.T) {
 	}
 }
 
-func TestValidation_ChunkOverlapExceedsMax(t *testing.T) {
-	yaml := `
-codebase:
-  path: /tmp
-  name: test
-  languages: [go]
-indexing:
-  chunk_max_lines: 50
-  chunk_overlap_lines: 50
-vector_store:
-  url: http://localhost
-metadata_store:
-  host: localhost
-  database: db
-`
-	tmpDir := t.TempDir()
-	cfgPath := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := LoadFromFile(cfgPath)
-	if err == nil {
-		t.Fatal("expected error when overlap >= max lines")
-	}
-	if !strings.Contains(err.Error(), "chunk_overlap_lines") {
-		t.Errorf("expected chunk_overlap_lines error, got %q", err.Error())
-	}
-}
-
-func TestValidation_ConcurrentRequestsTooHigh(t *testing.T) {
-	yaml := `
-codebase:
-  path: /tmp
-  name: test
-  languages: [go]
-indexing:
-  concurrent_requests: 100
-vector_store:
-  url: http://localhost
-metadata_store:
-  host: localhost
-  database: db
-`
-	tmpDir := t.TempDir()
-	cfgPath := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := LoadFromFile(cfgPath)
-	if err == nil {
-		t.Fatal("expected error for concurrent_requests > 50")
-	}
-	if !strings.Contains(err.Error(), "concurrent_requests") {
-		t.Errorf("expected concurrent_requests error, got %q", err.Error())
-	}
-}
-
-func TestValidation_ChunkMaxLinesTooSmall(t *testing.T) {
-	yaml := `
-codebase:
-  path: /tmp
-  name: test
-  languages: [go]
-indexing:
-  chunk_max_lines: 5
-vector_store:
-  url: http://localhost
-metadata_store:
-  host: localhost
-  database: db
-`
-	tmpDir := t.TempDir()
-	cfgPath := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := LoadFromFile(cfgPath)
-	if err == nil {
-		t.Fatal("expected error for chunk_max_lines < 10")
-	}
-	if !strings.Contains(err.Error(), "chunk_max_lines") {
-		t.Errorf("expected chunk_max_lines error, got %q", err.Error())
-	}
-}
+// Chunking / batching / concurrent_requests bounds checks moved server-side
+// with the pipeline (#18); the indexer no longer cares about those values
+// because it doesn't chunk or embed. The previous TestValidation_* tests for
+// chunk_overlap, concurrent_requests, and chunk_max_lines bounds have been
+// removed. Server-side bounds should be re-added against ValidateForServer
+// in a future test pass.
 
 func TestValidation_MultipleErrors(t *testing.T) {
-	yaml := `
-indexing:
-  batch_size: 1
+	// Only the codebase-identity errors apply to the indexer post-#18.
+	yaml := `indexing:
+  incremental: true
 `
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.yaml")
@@ -500,9 +382,6 @@ indexing:
 	errText := err.Error()
 	if !strings.Contains(errText, "codebase.path") {
 		t.Errorf("expected codebase.path error in %q", errText)
-	}
-	if !strings.Contains(errText, "vector_store.url") {
-		t.Errorf("expected vector_store.url error in %q", errText)
 	}
 }
 

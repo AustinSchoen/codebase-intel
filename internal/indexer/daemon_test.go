@@ -9,11 +9,11 @@ import (
 	"github.com/AustinSchoen/codebase-intel/internal/config"
 )
 
-// stubIndexer returns an *Indexer wired up with the minimum fields the daemon
-// touches for routing — name and logger. We never call any backend method, so
-// store / qdrant / embedder stay nil; tests must not invoke fullIndex.
-func stubIndexer(name string) *Indexer {
-	return &Indexer{
+// stubClient returns a *Client wired with the minimum fields the daemon
+// touches for routing — codebase name and logger. We never call any HTTP
+// method on it, so the server URL just needs to be non-empty.
+func stubClient(name string) *Client {
+	return &Client{
 		cfg: &config.Config{
 			Codebase: config.CodebaseConfig{
 				Name: name,
@@ -26,11 +26,11 @@ func stubIndexer(name string) *Indexer {
 
 func newTestDaemon(t *testing.T, names ...string) *Daemon {
 	t.Helper()
-	indexers := make(map[string]*Indexer, len(names))
+	clients := make(map[string]*Client, len(names))
 	for _, name := range names {
-		indexers[name] = stubIndexer(name)
+		clients[name] = stubClient(name)
 	}
-	return NewDaemon(indexers, DaemonConfig{
+	return NewDaemon(clients, DaemonConfig{
 		ServerURL: "http://example.invalid",
 		NodeID:    "test-node",
 	})
@@ -48,7 +48,7 @@ func TestDaemon_CodebasesReturnsSortedNames(t *testing.T) {
 func TestDaemon_IndexerLookupByCodebase(t *testing.T) {
 	d := newTestDaemon(t, "azimuth", "lumina-app")
 
-	az := d.indexers["azimuth"]
+	az := d.clients["azimuth"]
 	if az == nil {
 		t.Fatal("expected indexer for 'azimuth' to be present")
 	}
@@ -56,7 +56,7 @@ func TestDaemon_IndexerLookupByCodebase(t *testing.T) {
 		t.Errorf("lookup returned wrong indexer: %s", az.cfg.Codebase.Name)
 	}
 
-	lu := d.indexers["lumina-app"]
+	lu := d.clients["lumina-app"]
 	if lu == nil {
 		t.Fatal("expected indexer for 'lumina-app' to be present")
 	}
@@ -64,7 +64,7 @@ func TestDaemon_IndexerLookupByCodebase(t *testing.T) {
 		t.Error("expected distinct indexer instances for distinct codebases")
 	}
 
-	if d.indexers["unknown"] != nil {
+	if d.clients["unknown"] != nil {
 		t.Error("expected nil for unknown codebase")
 	}
 }
@@ -107,10 +107,10 @@ func TestDaemon_SSEURLIncludesAllCodebases(t *testing.T) {
 // existing single-config deployments.
 func TestDaemon_SingleCodebaseStillWorks(t *testing.T) {
 	d := newTestDaemon(t, "only")
-	if got := len(d.indexers); got != 1 {
+	if got := len(d.clients); got != 1 {
 		t.Fatalf("expected 1 indexer, got %d", got)
 	}
-	if d.indexers["only"] == nil {
+	if d.clients["only"] == nil {
 		t.Fatal("expected indexer for 'only' to be present")
 	}
 	if got := d.codebases(); !reflect.DeepEqual(got, []string{"only"}) {

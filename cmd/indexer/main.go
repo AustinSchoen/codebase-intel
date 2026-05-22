@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -100,49 +99,44 @@ func main() {
 		}
 	}
 
-	// Build one Indexer per config. Reject duplicate codebase names — the
-	// daemon's indexer map and the server's node map both key on codebase
-	// name, so duplicates would silently shadow each other.
-	indexers := make(map[string]*indexer.Indexer, len(configs))
-	for _, cfg := range configs {
-		name := cfg.Codebase.Name
-		if _, dup := indexers[name]; dup {
-			fmt.Fprintf(os.Stderr, "Error: duplicate codebase name %q across -config flags\n", name)
-			os.Exit(1)
-		}
-		idx, err := indexer.New(cfg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create indexer for %s: %v\n", name, err)
-			os.Exit(1)
-		}
-		indexers[name] = idx
-	}
-
-	// Migrations: schema is shared across codebases, so run against the first
-	// indexer and exit.
+	// Migrations are now server-side (#18): the MCP server runs them on
+	// startup. The -migrate flag is preserved as a no-op with a hint so
+	// existing setup scripts don't break.
 	if *migrate {
-		migrationsDir := findMigrationsDir()
-		// Map iteration order is non-deterministic; pick whatever comes out.
-		var any *indexer.Indexer
-		for _, idx := range indexers {
-			any = idx
-			break
-		}
-		if err := any.RunMigrations(context.Background(), migrationsDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Migration failed: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("Migrations complete.")
+		fmt.Fprintln(os.Stderr, "Note: migrations are now run automatically by the MCP server on startup. -migrate is a no-op.")
 		return
 	}
 
-	// Daemon mode: serve all indexers from one process, one SSE connection.
-	if *daemon {
-		if *serverURL == "" {
-			fmt.Fprintf(os.Stderr, "Error: -server-url is required in daemon mode\n")
+	// Indexer is a thin HTTP client to the server (#18). Both daemon and
+	// one-shot modes need the server URL + bearer token.
+	if *serverURL == "" {
+		fmt.Fprintln(os.Stderr, "Error: -server-url is required. Use http://localhost:8090 if the server is on this host.")
+		os.Exit(1)
+	}
+	// Fall back to $MCP_API_KEY if -server-key wasn't passed explicitly. This
+	// is what setup-indexer.sh sets in the service file's environment, so the
+	// daemon command line doesn't need to carry the token directly.
+	if *serverKey == "" {
+		*serverKey = os.Getenv("MCP_API_KEY")
+	}
+	if *serverKey == "" {
+		fmt.Fprintln(os.Stderr, "warning: -server-key and MCP_API_KEY both empty; requests will be sent without an Authorization header")
+	}
+
+	// Build one Client per config. Reject duplicate codebase names — the
+	// server's node map keys on codebase, so duplicates would shadow.
+	clients := make(map[string]*indexer.Client, len(configs))
+	for _, cfg := range configs {
+		name := cfg.Codebase.Name
+		if _, dup := clients[name]; dup {
+			fmt.Fprintf(os.Stderr, "Error: duplicate codebase name %q across -config flags\n", name)
 			os.Exit(1)
 		}
+		clients[name] = indexer.NewClient(cfg, *serverURL, *serverKey, nil)
+	}
 
+	// Daemon mode: serve all codebases from one process, one SSE connection.
+	if *daemon {
 		nid := *nodeID
 		if nid == "" {
 			hostname, err := os.Hostname()
@@ -153,14 +147,14 @@ func main() {
 			}
 		}
 
-		d := indexer.NewDaemon(indexers, indexer.DaemonConfig{
+		d := indexer.NewDaemon(clients, indexer.DaemonConfig{
 			ServerURL: *serverURL,
 			ServerKey: *serverKey,
 			NodeID:    nid,
 		})
 
-		codebaseNames := make([]string, 0, len(indexers))
-		for name := range indexers {
+		codebaseNames := make([]string, 0, len(clients))
+		for name := range clients {
 			codebaseNames = append(codebaseNames, name)
 		}
 		fmt.Fprintf(os.Stderr, "Starting daemon mode: node=%s codebases=%v server=%s\n",
@@ -173,12 +167,12 @@ func main() {
 		return
 	}
 
-	// One-shot mode: index each codebase sequentially.
-	for name, idx := range indexers {
-		if len(indexers) > 1 {
+	// One-shot mode: walk each codebase sequentially, upload to server, exit.
+	for name, c := range clients {
+		if len(clients) > 1 {
 			fmt.Fprintf(os.Stderr, "Indexing codebase: %s\n", name)
 		}
-		if err := idx.RunOnce(); err != nil {
+		if err := c.RunOnce(); err != nil {
 			fmt.Fprintf(os.Stderr, "Indexer error for %s: %v\n", name, err)
 			os.Exit(1)
 		}
@@ -233,17 +227,3 @@ func runDiscovery() {
 	}
 }
 
-// findMigrationsDir locates the migrations directory relative to the repo root.
-func findMigrationsDir() string {
-	// Use git rev-parse to find repo root
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err == nil {
-		root := strings.TrimSpace(string(out))
-		dir := filepath.Join(root, "migrations")
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			return dir
-		}
-	}
-	// Fallback to relative path
-	return "migrations"
-}
