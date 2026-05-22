@@ -41,6 +41,10 @@ type Pipeline struct {
 	// concern — incoming files use the server's chunking parameters.
 	indexingCfg config.IndexingConfig
 
+	// embeddingCfg carries the embedding model + dimensions; the latter is
+	// needed when creating new qdrant collections.
+	embeddingCfg config.EmbeddingConfig
+
 	logger *log.Logger
 }
 
@@ -55,13 +59,14 @@ func New(
 	logger *log.Logger,
 ) (*Pipeline, error) {
 	return &Pipeline{
-		parser:      parser.New(),
-		chunker:     chunker.New(indexingCfg.ChunkMaxLines, indexingCfg.ChunkOverlapLines),
-		embedder:    embedder,
-		qdrant:      qdr,
-		store:       store,
-		indexingCfg: indexingCfg,
-		logger:      logger,
+		parser:       parser.New(),
+		chunker:      chunker.New(indexingCfg.ChunkMaxLines, indexingCfg.ChunkOverlapLines),
+		embedder:     embedder,
+		qdrant:       qdr,
+		store:        store,
+		indexingCfg:  indexingCfg,
+		embeddingCfg: embeddingCfg,
+		logger:       logger,
 	}, nil
 }
 
@@ -340,12 +345,19 @@ func (p *Pipeline) DeleteFile(ctx context.Context, codebase, filepath string) er
 	return nil
 }
 
-// EnsureCodebase registers a codebase row before any files are indexed. The
-// indexer daemon doesn't know the local-filesystem path on the server side,
-// so we just record the codebase ID + a display name. RootPath stays empty;
-// the dashboard treats it as "remote" when blank.
+// EnsureCodebase registers a codebase row before any files are indexed AND
+// creates the corresponding qdrant collection. The latter used to live in
+// indexer.fullIndex; when the indexer became a thin client it stopped being
+// called for new codebases, which caused 404s on vector upsert until a
+// collection was created out-of-band. Both operations are idempotent.
 func (p *Pipeline) EnsureCodebase(ctx context.Context, codebase, displayName, rootPath string) error {
-	return p.store.EnsureCodebase(ctx, codebase, rootPath, displayName)
+	if err := p.store.EnsureCodebase(ctx, codebase, rootPath, displayName); err != nil {
+		return err
+	}
+	if err := p.qdrant.EnsureCollection(ctx, codebase, p.embeddingCfg.Dimensions); err != nil {
+		return fmt.Errorf("ensuring qdrant collection: %w", err)
+	}
+	return nil
 }
 
 // DetectLanguage maps a file path's extension to a language tag the parser
