@@ -33,6 +33,28 @@ func (c *Client) CollectionName(codebaseID string) string {
 	return fmt.Sprintf("%s_%s", c.collectionPrefix, codebaseID)
 }
 
+// Healthz checks Qdrant's /healthz endpoint. Returns nil if Qdrant responds
+// with a 2xx status, an error otherwise. Used by the /ready HTTP endpoint as
+// a runtime liveness check.
+func (c *Client) Healthz(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/healthz", nil)
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("api-key", c.apiKey)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("contacting qdrant: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("qdrant returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // Point represents a vector point to upsert into Qdrant.
 type Point struct {
 	ID      string                 `json:"id"`

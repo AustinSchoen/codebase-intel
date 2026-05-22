@@ -42,6 +42,12 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
+// Ping verifies the connection pool can reach Postgres. Used by the /ready
+// HTTP endpoint as a runtime liveness check.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 // RunMigrations executes all .sql files in migrationsDir in lexical order.
 func (s *Store) RunMigrations(ctx context.Context, migrationsDir string) error {
 	entries, err := os.ReadDir(migrationsDir)

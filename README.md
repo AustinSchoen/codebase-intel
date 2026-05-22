@@ -60,7 +60,7 @@ Setup will prompt for your Voyage AI API key and generate all other credentials 
                            │ HTTP :8090
 ┌──────────────────────────▼──────────────────────────────┐
 │                     MCP Server (Go)                      │
-│  tools/list · tools/call · /health · /mcp/indexer        │
+│  tools/list · tools/call · /health · /ready · /mcp/...   │
 └─────┬──────────────────────────────────────┬────────────┘
       │                                      │
 ┌─────▼─────────┐                   ┌────────▼────────────┐
@@ -111,6 +111,18 @@ One per codebase. See `configs/example-codebase.yaml` for all options. Key field
 docker compose logs server    # check server logs
 docker compose logs postgres  # check postgres logs
 docker compose logs qdrant    # check qdrant logs
+```
+
+The server fails fast on startup if Postgres is unreachable — letting it run with a broken metadata store would silently degrade the MCP tools that depend on it. Docker's restart policy handles transient Postgres unavailability.
+
+**Health vs readiness**
+
+- `GET /health` — liveness probe, always 200 while the HTTP server is up
+- `GET /ready` — readiness probe, 200 only if Postgres and Qdrant are both reachable right now; 503 with a per-backend status object otherwise
+
+```bash
+curl -s http://localhost:8090/ready
+# {"ready":true,"backends":{"postgres":{"ok":true},"qdrant":{"ok":true}}}
 ```
 
 **Indexer can't connect to Postgres/Qdrant**
