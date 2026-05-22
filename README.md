@@ -30,9 +30,17 @@ cp configs/example-codebase.yaml configs/my-project.yaml
 
 # 4. Index
 ./scripts/index.sh configs/my-project.yaml
+
+# 5. Wire it to Claude Code (setup.sh prints this command with the token filled in)
+claude mcp add codebase-intel \
+  --transport http \
+  --url http://localhost:8090/mcp \
+  --header "Authorization: Bearer <MCP_API_KEY from setup.sh output>"
 ```
 
-Setup will prompt for your Voyage AI API key and generate all other credentials automatically.
+Setup prompts for your Voyage AI API key and generates everything else. Your Claude Code session now has `search_code`, `get_symbol`, `get_references`, and the rest of the [MCP tools](#mcp-tools) below.
+
+**Indexing multiple machines.** If you want to run the server on one host and have other machines (laptops, dev VMs) push their codebases to it, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). It's `git clone + ./setup-indexer.sh` per machine — the indexer auto-discovers the server on the LAN via mDNS.
 
 ## MCP Tools
 

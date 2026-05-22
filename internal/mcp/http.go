@@ -7,12 +7,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/AustinSchoen/codebase-intel/internal/discovery"
 	"github.com/AustinSchoen/codebase-intel/internal/metrics"
 )
 
@@ -65,6 +69,17 @@ func (s *Server) RunHTTP(addr string) error {
 		t.apiKey = os.Getenv(s.cfg.Server.APIKeyEnv)
 		if t.apiKey == "" {
 			s.logger.Printf("warning: server.api_key_env set to %q but env var is empty, auth disabled", s.cfg.Server.APIKeyEnv)
+		}
+	}
+
+	// Publish ourselves on mDNS so indexer hosts on the same LAN can find
+	// us without manual URL/token entry. Disabled via server.discovery.advertise
+	// in config; token advertising disabled via server.discovery.advertise_token.
+	if s.cfg.Server.Discovery.AdvertiseEnabled() {
+		if adv, err := startDiscoveryAdvertise(addr, t.apiKey, s.cfg.Server.Discovery.TokenAdvertiseEnabled(), s.logger); err != nil {
+			s.logger.Printf("warning: mDNS advertise failed (continuing without discovery): %v", err)
+		} else if adv != nil {
+			defer adv.Shutdown()
 		}
 	}
 
@@ -590,4 +605,43 @@ func (s *Server) updateIndexMetrics(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// startDiscoveryAdvertise extracts the port from a listen address and starts
+// publishing this server on mDNS. The bearer token is included in the TXT
+// record when advertiseToken is true (allowing indexer hosts to auto-
+// configure auth) or omitted when false (the operator must wire up the
+// token manually). Returns nil, nil if discovery wasn't started but no error
+// path was hit (e.g., addr couldn't be parsed and the caller already logged).
+func startDiscoveryAdvertise(addr, token string, advertiseToken bool, logger *log.Logger) (discovery.Advertiser, error) {
+	port, err := portFromAddr(addr)
+	if err != nil {
+		return nil, fmt.Errorf("extracting port from %q: %w", addr, err)
+	}
+
+	opts := discovery.AdvertiseOptions{Port: port}
+	if advertiseToken {
+		opts.Token = token
+	}
+	adv, err := discovery.Advertise(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if advertiseToken && token != "" {
+		logger.Printf("mDNS: advertising on port %d with bearer token (set server.discovery.advertise_token: false to omit)", port)
+	} else {
+		logger.Printf("mDNS: advertising on port %d (no token in TXT record)", port)
+	}
+	return adv, nil
+}
+
+// portFromAddr parses the port out of a listen address. Handles ":8090",
+// "0.0.0.0:8090", "192.168.1.10:8090", and "[::1]:8090".
+func portFromAddr(addr string) (int, error) {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(portStr)
 }

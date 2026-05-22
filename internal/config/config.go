@@ -23,6 +23,37 @@ type Config struct {
 
 type ServerConfig struct {
 	APIKeyEnv string `yaml:"api_key_env"`
+
+	// Discovery controls LAN auto-discovery via mDNS. When Advertise is
+	// true (default), the server publishes itself as
+	// `_codebase-intel._tcp.local`, so indexer hosts running setup-indexer.sh
+	// can find it without manual URL entry. AdvertiseToken (default true)
+	// additionally puts the bearer token in the mDNS TXT record so indexers
+	// can auto-configure auth too — disable on LANs with untrusted devices.
+	Discovery DiscoveryConfig `yaml:"discovery"`
+}
+
+type DiscoveryConfig struct {
+	Advertise      *bool `yaml:"advertise,omitempty"`       // pointer so unset → default true
+	AdvertiseToken *bool `yaml:"advertise_token,omitempty"` // pointer so unset → default true
+}
+
+// AdvertiseEnabled reports whether the server should publish itself on mDNS.
+// Defaults to true when unset.
+func (d DiscoveryConfig) AdvertiseEnabled() bool {
+	if d.Advertise == nil {
+		return true
+	}
+	return *d.Advertise
+}
+
+// TokenAdvertiseEnabled reports whether the bearer token should be included
+// in the mDNS TXT record. Defaults to true when unset.
+func (d DiscoveryConfig) TokenAdvertiseEnabled() bool {
+	if d.AdvertiseToken == nil {
+		return true
+	}
+	return *d.AdvertiseToken
 }
 
 type RerankConfig struct {
