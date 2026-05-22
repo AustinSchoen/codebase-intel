@@ -424,15 +424,17 @@ func (t *HTTPTransport) handleIndexer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse registration from query parameters
-	nodeID := r.URL.Query().Get("node_id")
-	codebase := r.URL.Query().Get("codebase")
-	if nodeID == "" || codebase == "" {
-		writeHTTPError(w, http.StatusBadRequest, "node_id and codebase query parameters required")
+	// Parse registration from query parameters. `codebase` may be repeated
+	// (e.g. `?codebase=a&codebase=b`) so a single daemon process can serve
+	// multiple codebases on one host. Single-codebase clients still work
+	// unchanged since one `?codebase=foo` produces a 1-element slice.
+	q := r.URL.Query()
+	nodeID := q.Get("node_id")
+	codebases := q["codebase"]
+	if nodeID == "" || len(codebases) == 0 {
+		writeHTTPError(w, http.StatusBadRequest, "node_id and at least one codebase query parameter required")
 		return
 	}
-
-	codebases := []string{codebase}
 
 	// Create SSE channel for this indexer
 	sseChan := make(chan []byte, 64)

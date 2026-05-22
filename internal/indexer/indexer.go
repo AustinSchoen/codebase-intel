@@ -39,6 +39,12 @@ type Indexer struct {
 	store     *postgres.Store
 	summarGen *summary.Generator
 	logger    *log.Logger
+
+	// reindexMu serializes reindex operations on this indexer so a watcher-
+	// triggered batch and an MCP-triggered reindex for the same codebase
+	// don't race. It lives on the indexer (not the daemon) so a multi-
+	// codebase daemon can reindex two different codebases in parallel.
+	reindexMu sync.Mutex
 }
 
 // New creates an Indexer with all pipeline components.
