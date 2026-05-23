@@ -176,13 +176,13 @@ func (p *Parser) goFunction(node *sitter.Node, source []byte) Symbol {
 	sig := extractFirstLine(node.Content(source))
 
 	return Symbol{
-		Name:      name,
-		Qualified: name,
-		Kind:      "function",
-		Content:   node.Content(source),
-		Signature: sig,
-		LineStart: int(node.StartPoint().Row) + 1,
-		LineEnd:   int(node.EndPoint().Row) + 1,
+		Name:       name,
+		Qualified:  name,
+		Kind:       "function",
+		Content:    node.Content(source),
+		Signature:  sig,
+		LineStart:  int(node.StartPoint().Row) + 1,
+		LineEnd:    int(node.EndPoint().Row) + 1,
 		DocComment: findPrecedingComment(node, source),
 	}
 }

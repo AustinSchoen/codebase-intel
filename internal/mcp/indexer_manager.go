@@ -13,11 +13,11 @@ import (
 
 // IndexerNode represents a connected indexer daemon.
 type IndexerNode struct {
-	NodeID      string    `json:"node_id"`
-	Codebases   []string  `json:"codebases"`
-	ConnectedAt time.Time `json:"connected_at"`
-	LastSeen    time.Time `json:"last_seen"`
-	Status      string    `json:"status"` // idle, indexing
+	NodeID      string      `json:"node_id"`
+	Codebases   []string    `json:"codebases"`
+	ConnectedAt time.Time   `json:"connected_at"`
+	LastSeen    time.Time   `json:"last_seen"`
+	Status      string      `json:"status"` // idle, indexing
 	SSEChan     chan []byte `json:"-"`
 }
 

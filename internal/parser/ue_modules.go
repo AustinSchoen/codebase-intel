@@ -9,24 +9,24 @@ import (
 
 // UEModule represents a discovered Unreal Engine module from a .Build.cs file.
 type UEModule struct {
-	Name               string   `json:"name"`
-	BuildCSPath        string   `json:"build_cs_path"`
-	Dependencies       []string `json:"dependencies,omitempty"`
-	PublicDependencies []string `json:"public_dependencies,omitempty"`
+	Name                string   `json:"name"`
+	BuildCSPath         string   `json:"build_cs_path"`
+	Dependencies        []string `json:"dependencies,omitempty"`
+	PublicDependencies  []string `json:"public_dependencies,omitempty"`
 	PrivateDependencies []string `json:"private_dependencies,omitempty"`
-	PublicIncludePaths []string `json:"public_include_paths,omitempty"`
+	PublicIncludePaths  []string `json:"public_include_paths,omitempty"`
 	PrivateIncludePaths []string `json:"private_include_paths,omitempty"`
-	ModuleDirectory    string   `json:"module_directory"`
+	ModuleDirectory     string   `json:"module_directory"`
 }
 
 // UEPlugin represents a discovered .uplugin or .uproject file.
 type UEPlugin struct {
-	Name        string            `json:"name"`
-	FilePath    string            `json:"file_path"`
-	Modules     []UEPluginModule  `json:"modules,omitempty"`
-	Plugins     []UEPluginRef     `json:"plugins,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Category    string            `json:"category,omitempty"`
+	Name        string           `json:"name"`
+	FilePath    string           `json:"file_path"`
+	Modules     []UEPluginModule `json:"modules,omitempty"`
+	Plugins     []UEPluginRef    `json:"plugins,omitempty"`
+	Description string           `json:"description,omitempty"`
+	Category    string           `json:"category,omitempty"`
 }
 
 // UEPluginModule is a module reference in a .uplugin/.uproject file.
@@ -59,11 +59,11 @@ var (
 	reStringLiteral = regexp.MustCompile(`"([^"]+)"`)
 
 	// Match JSON-like patterns in .uplugin/.uproject for modules
-	rePluginModule = regexp.MustCompile(`"Name"\s*:\s*"([^"]+)"`)
-	rePluginType   = regexp.MustCompile(`"Type"\s*:\s*"([^"]+)"`)
+	rePluginModule  = regexp.MustCompile(`"Name"\s*:\s*"([^"]+)"`)
+	rePluginType    = regexp.MustCompile(`"Type"\s*:\s*"([^"]+)"`)
 	rePluginEnabled = regexp.MustCompile(`"Enabled"\s*:\s*(true|false)`)
-	rePluginDesc   = regexp.MustCompile(`"Description"\s*:\s*"([^"]*)"`)
-	rePluginCat    = regexp.MustCompile(`"Category"\s*:\s*"([^"]*)"`)
+	rePluginDesc    = regexp.MustCompile(`"Description"\s*:\s*"([^"]*)"`)
+	rePluginCat     = regexp.MustCompile(`"Category"\s*:\s*"([^"]*)"`)
 )
 
 // DiscoverUEModules walks a directory tree and discovers UE modules from .Build.cs files.

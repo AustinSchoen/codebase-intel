@@ -15,8 +15,10 @@ Go MCP server that indexes codebases and exposes them to AI agents via the Model
 
 ```
 cmd/
-  server/        MCP server entry point (stdio + HTTP)
-  indexer/       CLI indexer (one-shot + daemon mode)
+  server/        MCP server entry point (stdio + HTTP). Owns the
+                 indexing pipeline and all backend credentials.
+  indexer/       Thin-client CLI (one-shot + daemon mode). Walks
+                 the codebase, ships file content to the server.
   benchmark/     Retrieval-quality benchmark harness
 internal/
   config/        YAML config loading
@@ -27,13 +29,23 @@ internal/
   storage/
     qdrant/      Vector store
     postgres/    Symbols, references, summaries
-  indexer/       File watcher (fsnotify), indexing pipeline, GC
-  mcp/           MCP server, HTTP transport, tool handlers, dashboard
+  pipeline/      Server-side parse → chunk → embed → store pipeline.
+                 Called by the /mcp/indexer/files handler; was moved
+                 here from internal/indexer in the thin-client refactor.
+  indexer/       Thin client + daemon (file watcher, SSE, HTTP uploads).
+                 No parser/chunker/embedder/backend imports.
+  mcp/           MCP server, HTTP transport, tool handlers, dashboard.
+                 Hosts the /mcp/indexer/{files,gc,delete} endpoints.
+  migrations/    Embedded PostgreSQL schema (go:embed); applied on
+                 server startup.
+  discovery/     mDNS / Zeroconf service advertise + discover for
+                 frictionless multi-host indexer setup.
+  httpretry/     Retry helper with backoff + Retry-After; wraps
+                 Voyage / Qdrant / server HTTP calls.
   summary/       Claude-based module/subsystem summaries
   claudemd/      CLAUDE.md generation
   rerank/        Optional Cohere reranker
   metrics/       Prometheus metrics
-migrations/      PostgreSQL schema
 ```
 
 Full architecture in [ARCHITECTURE.md](ARCHITECTURE.md). Contributor guide in [CONTRIBUTING.md](CONTRIBUTING.md).

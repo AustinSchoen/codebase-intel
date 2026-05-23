@@ -132,7 +132,7 @@ var jsBuiltinFuncs = map[string]bool{
 	"Array.isArray": true, "Array.from": true,
 	"Promise.resolve": true, "Promise.reject": true, "Promise.all": true, "Promise.race": true,
 	"require": true,
-	"alert": true, "confirm": true, "prompt": true,
+	"alert":   true, "confirm": true, "prompt": true,
 	"fetch": true,
 }
 

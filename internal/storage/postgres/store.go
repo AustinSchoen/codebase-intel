@@ -3,10 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -54,33 +50,6 @@ func (s *Store) Ping(ctx context.Context) error {
 func (s *Store) Exec(ctx context.Context, sql string) error {
 	_, err := s.pool.Exec(ctx, sql)
 	return err
-}
-
-// RunMigrations executes all .sql files in migrationsDir in lexical order.
-func (s *Store) RunMigrations(ctx context.Context, migrationsDir string) error {
-	entries, err := os.ReadDir(migrationsDir)
-	if err != nil {
-		return fmt.Errorf("reading migrations dir %s: %w", migrationsDir, err)
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
-		}
-		path := filepath.Join(migrationsDir, entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading migration %s: %w", entry.Name(), err)
-		}
-		if _, err := s.pool.Exec(ctx, string(data)); err != nil {
-			return fmt.Errorf("executing migration %s: %w", entry.Name(), err)
-		}
-	}
-	return nil
 }
 
 // Symbol represents a code symbol stored in PostgreSQL.

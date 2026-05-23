@@ -8,28 +8,28 @@ import (
 
 // UEMacroMeta represents parsed UE reflection metadata for a class/struct.
 type UEMacroMeta struct {
-	MacroType  string            `json:"macro_type,omitempty"`  // UCLASS, USTRUCT, UENUM
-	Specifiers []string          `json:"specifiers,omitempty"`  // BlueprintType, Blueprintable, etc.
-	Meta       map[string]string `json:"meta,omitempty"`        // DisplayName, Category, etc.
-	APIMacro   string            `json:"api_macro,omitempty"`   // ENGINE_API, etc.
+	MacroType  string            `json:"macro_type,omitempty"` // UCLASS, USTRUCT, UENUM
+	Specifiers []string          `json:"specifiers,omitempty"` // BlueprintType, Blueprintable, etc.
+	Meta       map[string]string `json:"meta,omitempty"`       // DisplayName, Category, etc.
+	APIMacro   string            `json:"api_macro,omitempty"`  // ENGINE_API, etc.
 	Properties []UEProperty      `json:"properties,omitempty"`
 	Functions  []UEFunction      `json:"functions,omitempty"`
 }
 
 // UEProperty represents a parsed UPROPERTY declaration.
 type UEProperty struct {
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	Specifiers []string `json:"specifiers,omitempty"`
-	Category   string   `json:"category,omitempty"`
+	Name       string            `json:"name"`
+	Type       string            `json:"type"`
+	Specifiers []string          `json:"specifiers,omitempty"`
+	Category   string            `json:"category,omitempty"`
 	Meta       map[string]string `json:"meta,omitempty"`
 }
 
 // UEFunction represents a parsed UFUNCTION declaration.
 type UEFunction struct {
-	Name       string   `json:"name"`
-	Specifiers []string `json:"specifiers,omitempty"`
-	Category   string   `json:"category,omitempty"`
+	Name       string            `json:"name"`
+	Specifiers []string          `json:"specifiers,omitempty"`
+	Category   string            `json:"category,omitempty"`
 	Meta       map[string]string `json:"meta,omitempty"`
 }
 

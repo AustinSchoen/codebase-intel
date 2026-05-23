@@ -20,12 +20,12 @@ type benchmarkEntry struct {
 }
 
 type benchmarkResult struct {
-	Query       string  `json:"query"`
-	Precision5  float64 `json:"precision_at_5"`
-	MRR         float64 `json:"mrr"`
-	TopResults  []hit   `json:"top_results"`
-	MatchCount  int     `json:"match_count"`
-	TotalTop5   int     `json:"total_top5"`
+	Query      string  `json:"query"`
+	Precision5 float64 `json:"precision_at_5"`
+	MRR        float64 `json:"mrr"`
+	TopResults []hit   `json:"top_results"`
+	MatchCount int     `json:"match_count"`
+	TotalTop5  int     `json:"total_top5"`
 }
 
 type hit struct {
@@ -36,10 +36,10 @@ type hit struct {
 }
 
 type benchmarkSummary struct {
-	TotalQueries    int               `json:"total_queries"`
-	MeanPrecision5  float64           `json:"mean_precision_at_5"`
-	MeanMRR         float64           `json:"mean_mrr"`
-	Results         []benchmarkResult `json:"results"`
+	TotalQueries   int               `json:"total_queries"`
+	MeanPrecision5 float64           `json:"mean_precision_at_5"`
+	MeanMRR        float64           `json:"mean_mrr"`
+	Results        []benchmarkResult `json:"results"`
 }
 
 func main() {

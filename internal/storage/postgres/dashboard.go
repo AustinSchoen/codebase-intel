@@ -8,14 +8,14 @@ import (
 
 // CodebaseStats holds detailed statistics for a single codebase.
 type CodebaseStats struct {
-	ID               string     `json:"id"`
-	DisplayName      string     `json:"display_name"`
-	RootPath         string     `json:"root_path"`
-	FileCount        int64      `json:"file_count"`
-	SymbolCount      int64      `json:"symbol_count"`
-	RelationshipCount int64     `json:"relationship_count"`
-	ChunkCount       int64      `json:"chunk_count"`
-	LastIndexedAt    *time.Time `json:"last_indexed_at"`
+	ID                string     `json:"id"`
+	DisplayName       string     `json:"display_name"`
+	RootPath          string     `json:"root_path"`
+	FileCount         int64      `json:"file_count"`
+	SymbolCount       int64      `json:"symbol_count"`
+	RelationshipCount int64      `json:"relationship_count"`
+	ChunkCount        int64      `json:"chunk_count"`
+	LastIndexedAt     *time.Time `json:"last_indexed_at"`
 }
 
 // GetCodebaseStats returns detailed stats for a single codebase.
