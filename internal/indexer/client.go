@@ -366,6 +366,45 @@ type indexFilesResponse struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// postJSON marshals body as JSON, POSTs it to the path relative to the
+// server URL, and decodes the response into out (if non-nil). Bearer token
+// is attached when configured. Retries follow the default httpretry policy
+// (network errors, 5xx, 429 with Retry-After).
+//
+// Returns an error for transport failures, marshal/decode errors, or
+// non-2xx HTTP status. The error message includes the first 512 bytes of
+// the response body for diagnosability.
+func (c *Client) postJSON(ctx context.Context, path string, body interface{}, out interface{}) error {
+	reqBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal %s body: %w", path, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL+path, bytes.NewReader(reqBody))
+	if err != nil {
+		return fmt.Errorf("build %s request: %w", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.serverToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.serverToken)
+	}
+	resp, err := httpretry.Do(ctx, c.httpClient, req, httpretry.Policy{})
+	if err != nil {
+		return fmt.Errorf("post %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("post %s: server returned %d: %s", path, resp.StatusCode, string(b))
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode %s response: %w", path, err)
+	}
+	return nil
+}
+
 func (c *Client) postFiles(ctx context.Context, files []fileUpload, incremental, final bool, requestID string) (indexFilesResponse, error) {
 	req := indexFilesRequest{
 		Codebase:    c.cfg.Codebase.Name,
@@ -376,31 +415,12 @@ func (c *Client) postFiles(ctx context.Context, files []fileUpload, incremental,
 		RootPath:    c.cfg.Codebase.Path,
 		Files:       files,
 	}
-	body, err := json.Marshal(req)
-	if err != nil {
-		return indexFilesResponse{}, err
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL+"/mcp/indexer/files", bytes.NewReader(body))
-	if err != nil {
-		return indexFilesResponse{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.serverToken != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.serverToken)
-	}
-	resp, err := httpretry.Do(ctx, c.httpClient, httpReq, httpretry.Policy{})
-	if err != nil {
-		return indexFilesResponse{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return indexFilesResponse{}, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
-	}
 	var out indexFilesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return indexFilesResponse{}, fmt.Errorf("decoding response: %w", err)
+	if err := c.postJSON(ctx, "/mcp/indexer/files", req, &out); err != nil {
+		return out, err
 	}
+	// Server-reported per-request errors (e.g. relationship-finalize failure)
+	// arrive as a populated Error field on a 2xx response.
 	if out.Error != "" {
 		return out, errors.New(out.Error)
 	}
@@ -416,28 +436,10 @@ func (c *Client) postGC(ctx context.Context, keepFiles []string) error {
 	for i := range keepFiles {
 		keepFiles[i] = filepath.ToSlash(keepFiles[i])
 	}
-	body, err := json.Marshal(gcRequest{Codebase: c.cfg.Codebase.Name, KeepFiles: keepFiles})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL+"/mcp/indexer/gc", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.serverToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.serverToken)
-	}
-	resp, err := httpretry.Do(ctx, c.httpClient, req, httpretry.Policy{})
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
-	}
-	return nil
+	return c.postJSON(ctx, "/mcp/indexer/gc", gcRequest{
+		Codebase:  c.cfg.Codebase.Name,
+		KeepFiles: keepFiles,
+	}, nil)
 }
 
 type deleteRequest struct {
@@ -446,28 +448,10 @@ type deleteRequest struct {
 }
 
 func (c *Client) postDelete(ctx context.Context, files []string) error {
-	body, err := json.Marshal(deleteRequest{Codebase: c.cfg.Codebase.Name, Files: files})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL+"/mcp/indexer/delete", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.serverToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.serverToken)
-	}
-	resp, err := httpretry.Do(ctx, c.httpClient, req, httpretry.Policy{})
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
-	}
-	return nil
+	return c.postJSON(ctx, "/mcp/indexer/delete", deleteRequest{
+		Codebase: c.cfg.Codebase.Name,
+		Files:    files,
+	}, nil)
 }
 
 // generateRequestID returns a short opaque identifier used to group file

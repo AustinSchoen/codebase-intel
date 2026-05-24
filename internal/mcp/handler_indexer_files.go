@@ -37,28 +37,41 @@ type indexFilesResponse struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// decodeIndexerRequest performs the boilerplate shared by every /mcp/indexer/*
+// POST handler: bearer-token auth, method check, pipeline-readiness check,
+// JSON body decode. On any failure it writes the appropriate HTTP error and
+// returns false; the caller should bail.
+//
+// The caller still validates request-specific fields (e.g. that Codebase is
+// non-empty), because those vary per endpoint.
+func (t *HTTPTransport) decodeIndexerRequest(w http.ResponseWriter, r *http.Request, req interface{}) bool {
+	if !t.checkAuth(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	if t.server.pipeline == nil {
+		writeHTTPError(w, http.StatusServiceUnavailable, "indexing pipeline not initialized")
+		return false
+	}
+	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return false
+	}
+	return true
+}
+
 // handleIndexerFiles accepts a batch of file uploads from an indexer daemon
 // and runs them through the pipeline. Raw relationships are buffered per
 // request_id so that cross-file rels emitted in earlier batches can resolve
 // against symbols added in later batches. When the daemon signals final=true
 // the buffer drains and gets stored.
 func (t *HTTPTransport) handleIndexerFiles(w http.ResponseWriter, r *http.Request) {
-	if !t.checkAuth(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if t.server.pipeline == nil {
-		writeHTTPError(w, http.StatusServiceUnavailable, "indexing pipeline not initialized")
-		return
-	}
-
 	var req indexFilesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeHTTPError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if !t.decodeIndexerRequest(w, r, &req) {
 		return
 	}
 	if req.Codebase == "" || req.RequestID == "" {
@@ -125,22 +138,8 @@ type gcRequest struct {
 // present on the indexer host. Daemons walk their tree, send the current list,
 // and the server drops anything else.
 func (t *HTTPTransport) handleIndexerGC(w http.ResponseWriter, r *http.Request) {
-	if !t.checkAuth(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if t.server.pipeline == nil {
-		writeHTTPError(w, http.StatusServiceUnavailable, "indexing pipeline not initialized")
-		return
-	}
-
 	var req gcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeHTTPError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if !t.decodeIndexerRequest(w, r, &req) {
 		return
 	}
 	if req.Codebase == "" {
@@ -165,22 +164,8 @@ type deleteRequest struct {
 // handleIndexerDelete removes a single file (or a few) — used by watcher
 // events for file deletions. For bulk reconciliation, use /mcp/indexer/gc.
 func (t *HTTPTransport) handleIndexerDelete(w http.ResponseWriter, r *http.Request) {
-	if !t.checkAuth(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if t.server.pipeline == nil {
-		writeHTTPError(w, http.StatusServiceUnavailable, "indexing pipeline not initialized")
-		return
-	}
-
 	var req deleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeHTTPError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if !t.decodeIndexerRequest(w, r, &req) {
 		return
 	}
 	if req.Codebase == "" {
