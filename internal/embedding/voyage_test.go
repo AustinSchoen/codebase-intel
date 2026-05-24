@@ -496,15 +496,24 @@ func TestEmbedBatch_400Handling(t *testing.T) {
 	})
 
 	t.Run("mixed 400 and success across batches", func(t *testing.T) {
-		// First request succeeds, second returns 400
-		var requestCount atomic.Int32
+		// EmbedBatch fires goroutines for each batch; with c.concurrent=1
+		// only one runs at a time but the *acquisition* order of the
+		// semaphore is undefined (Go's runtime scheduler decides). Picking
+		// success/failure by request-arrival order made this test racy
+		// — under load the small (2-item) batch could arrive at the server
+		// before the large (128-item) batch and inherit the "success"
+		// response, inverting the expected result layout.
+		//
+		// Dispatch by payload SIZE instead: the 128-item batch always
+		// succeeds, the 2-item batch always returns 400, regardless of
+		// arrival order. Deterministic without needing goroutine-ordering
+		// guarantees from the implementation.
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			count := requestCount.Add(1)
 			var reqBody voyageRequest
 			json.NewDecoder(r.Body).Decode(&reqBody)
 
-			if count == 1 {
-				// First batch succeeds
+			if len(reqBody.Input) == 128 {
+				// Large batch succeeds.
 				data := make([]voyageEmbedding, len(reqBody.Input))
 				for i := range reqBody.Input {
 					data[i] = voyageEmbedding{
@@ -519,7 +528,9 @@ func TestEmbedBatch_400Handling(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(resp)
 			} else {
-				// Second batch returns 400
+				// Small batch returns 400 (simulates "this specific batch
+				// hit token limits" — what the original test was trying
+				// to model).
 				w.WriteHeader(http.StatusBadRequest)
 				w.Write([]byte(`{"detail":"too many tokens"}`))
 			}
@@ -527,10 +538,8 @@ func TestEmbedBatch_400Handling(t *testing.T) {
 		defer server.Close()
 
 		c := newTestClient(t, server)
-		// Force sequential processing to make the test deterministic
-		c.concurrent = 1
 
-		// Create 130 texts → 2 batches (128 + 2)
+		// 130 texts → splitBatches produces [128 items, 2 items].
 		texts := makeTexts(130, "hello")
 		results, err := c.EmbedBatch(context.Background(), texts)
 		if err != nil {
@@ -541,14 +550,14 @@ func TestEmbedBatch_400Handling(t *testing.T) {
 			t.Fatalf("results length = %d, want 130", len(results))
 		}
 
-		// First 128 should have embeddings
+		// First 128 should have embeddings (the 128-item batch succeeded).
 		for i := 0; i < 128; i++ {
 			if results[i] == nil {
 				t.Errorf("results[%d] is nil, expected embedding from successful batch", i)
 			}
 		}
 
-		// Last 2 should be nil (from 400 response)
+		// Last 2 should be nil (from the 2-item batch's 400 response).
 		for i := 128; i < 130; i++ {
 			if results[i] != nil {
 				t.Errorf("results[%d] = %v, expected nil from 400 batch", i, results[i])

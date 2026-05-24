@@ -130,11 +130,15 @@ func TestDo_Retries429AndHonorsRetryAfterSeconds(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
-	// We expect the Retry-After to delay roughly 1s ± jitter — much longer than
-	// the default 1ms BaseBackoff would. Anything under 800ms means the hint
-	// was ignored.
-	if elapsed < 800*time.Millisecond {
-		t.Errorf("elapsed = %v, expected ~1s from Retry-After", elapsed)
+	// Retry-After=1s gets jittered by sleepWithJitter, which uses
+	// DefaultPolicy.JitterFraction (0.25) regardless of the policy passed
+	// in. The actual sleep is therefore 1s × (1 ± 0.25) = [750ms, 1250ms].
+	// The lower bound here must accommodate that full range; observed CI
+	// failures at ~780ms were inside the valid jitter window. We add a
+	// small safety margin under 750ms to cover scheduler latency on slow
+	// runners (loaded GitHub Actions hosts).
+	if elapsed < 700*time.Millisecond {
+		t.Errorf("elapsed = %v, expected at least ~750ms from Retry-After (1s × jitter min)", elapsed)
 	}
 }
 
