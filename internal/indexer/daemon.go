@@ -53,8 +53,8 @@ func NewDaemon(clients map[string]*Client, cfg DaemonConfig) *Daemon {
 		break
 	}
 	return &Daemon{
-		cfg:      cfg,
-		logger:   logger,
+		cfg:     cfg,
+		logger:  logger,
 		clients: clients,
 	}
 }

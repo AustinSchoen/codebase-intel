@@ -226,4 +226,3 @@ func runDiscovery() {
 		os.Exit(1)
 	}
 }
-

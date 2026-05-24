@@ -460,9 +460,9 @@ func TestEstimateTokens_EdgeCases(t *testing.T) {
 		expect int
 	}{
 		{"", 0},
-		{"abc", 0},           // 3/4 = 0
-		{"abcd", 1},          // 4/4 = 1
-		{"12345678", 2},      // 8/4 = 2
+		{"abc", 0},                     // 3/4 = 0
+		{"abcd", 1},                    // 4/4 = 1
+		{"12345678", 2},                // 8/4 = 2
 		{strings.Repeat("x", 100), 25}, // 100/4 = 25
 	}
 	for _, tt := range tests {

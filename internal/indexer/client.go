@@ -75,7 +75,7 @@ func NewClient(cfg *config.Config, serverURL, serverToken string, logger *log.Lo
 		// already handles transient blips, so this is for "the server is
 		// genuinely working" rather than "the server is unreachable."
 		httpClient: &http.Client{Timeout: 10 * time.Minute},
-		logger:      logger,
+		logger:     logger,
 	}
 }
 
@@ -140,12 +140,12 @@ func (c *Client) fullIndex(ctx context.Context) error {
 	}
 
 	var (
-		batch        []fileUpload
-		batchBytes   int
-		indexed      int
-		unchanged    int
-		failed       int
-		filesPosted  int
+		batch       []fileUpload
+		batchBytes  int
+		indexed     int
+		unchanged   int
+		failed      int
+		filesPosted int
 	)
 	flush := func(final bool) error {
 		if len(batch) == 0 && !final {

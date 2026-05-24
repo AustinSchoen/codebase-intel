@@ -44,9 +44,9 @@ func NewGenerator(apiKey, model string, store *postgres.Store, codebaseID string
 
 // anthropicRequest is the request body for the Anthropic Messages API.
 type anthropicRequest struct {
-	Model     string            `json:"model"`
-	MaxTokens int               `json:"max_tokens"`
-	Messages  []anthropicMsg    `json:"messages"`
+	Model     string         `json:"model"`
+	MaxTokens int            `json:"max_tokens"`
+	Messages  []anthropicMsg `json:"messages"`
 }
 
 type anthropicMsg struct {

@@ -3,7 +3,6 @@ package mcp
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/AustinSchoen/codebase-intel/internal/pipeline"
@@ -223,6 +222,3 @@ func (t *HTTPTransport) dropRelBuffer(requestID string) {
 	delete(t.server.indexerRelBuffers, requestID)
 }
 
-// ensure fmt is referenced so the import isn't pruned by go fmt; used in
-// some helpers and easier to keep than to track when it's needed.
-var _ = fmt.Sprintf

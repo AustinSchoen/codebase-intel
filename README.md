@@ -61,14 +61,17 @@ Setup prompts for your Voyage AI API key and generates everything else. Your Cla
 
 ## Architecture
 
+The indexer is a thin HTTP client: it walks the codebase, reads files, and ships content to the server. The server owns the indexing pipeline (parse → chunk → embed → store) and the credentials for Voyage, Qdrant, and Postgres. Remote indexer hosts only need the MCP server URL and a bearer token — they never touch the backends directly.
+
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     Claude Code / MCP Client             │
+│                  Claude Code / MCP Client                │
 └──────────────────────────┬──────────────────────────────┘
                            │ HTTP :8090
 ┌──────────────────────────▼──────────────────────────────┐
 │                     MCP Server (Go)                      │
 │  tools/list · tools/call · /health · /ready · /mcp/...   │
+│  Pipeline: parse → chunk → embed (Voyage) → store        │
 └─────┬──────────────────────────────────────┬────────────┘
       │                                      │
 ┌─────▼─────────┐                   ┌────────▼────────────┐
@@ -77,9 +80,12 @@ Setup prompts for your Voyage AI API key and generates everything else. Your Cla
 │               │                   │   summaries)        │
 └───────────────┘                   └─────────────────────┘
 
-┌─────────────────────────────────────────────────────────┐
-│                 Indexer (runs on host)                    │
-│  Tree-sitter parse → chunk → embed (Voyage AI) → store   │
+                  ▲ POST /mcp/indexer/files
+                  │   (file content, JSON-encoded)
+                  │
+┌─────────────────┴───────────────────────────────────────┐
+│           Indexer Daemon (thin HTTP client)              │
+│  Walks codebase · fsnotify watcher · base64 + POST       │
 │  Modes: one-shot, daemon (file watch + auto-reindex)     │
 └─────────────────────────────────────────────────────────┘
 ```

@@ -72,7 +72,7 @@ func TestSplitBatches(t *testing.T) {
 			// Result: 3 batches: [text1,text2], [text3,text4], [text5].
 			texts: []string{
 				strings.Repeat("x", 200000), // ~50K tokens
-				"small",                      // 1 token
+				"small",                     // 1 token
 				strings.Repeat("y", 200000), // ~50K tokens
 				strings.Repeat("z", 200000), // ~50K tokens
 				strings.Repeat("w", 200000), // ~50K tokens

@@ -56,7 +56,7 @@ type Server struct {
 	summarAPIKey  string // stored for per-codebase generator creation
 	summarModel   string
 	summarEnabled bool
-	indexerMgr    *IndexerManager  // set in HTTP mode for reindex tools
+	indexerMgr    *IndexerManager    // set in HTTP mode for reindex tools
 	pipeline      *pipeline.Pipeline // server-side indexing pipeline (thin-client architecture, issue #18)
 
 	// indexerRelBuffers groups raw relationships from in-flight indexing

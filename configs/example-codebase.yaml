@@ -4,6 +4,12 @@
 # Usage:
 #   cp configs/example-codebase.yaml configs/my-project.yaml
 #   ./scripts/index.sh configs/my-project.yaml
+#
+# Under the thin-client architecture (issue #18), the indexer ships file
+# content to the MCP server, which runs the pipeline using its own backend
+# credentials. This file therefore only describes the codebase itself — the
+# embeddings / vector_store / metadata_store sections live in the SERVER's
+# config (see config.example.yaml), not here.
 
 codebase:
   # Absolute path to the codebase root
@@ -12,7 +18,8 @@ codebase:
   # Unique identifier (used in MCP tool calls as the "codebase" parameter)
   name: my-project
 
-  # Languages to parse (supported: go, python, typescript, javascript, rust, kotlin, swift)
+  # Languages to parse. Supported: go, python, typescript, javascript,
+  # rust, c, cpp, kotlin, swift, dart
   languages:
     - go
     - python
@@ -28,38 +35,6 @@ codebase:
 
 # Indexing behavior
 indexing:
-  # Max lines per code chunk (10-500)
-  chunk_max_lines: 200
-
-  # Overlap between adjacent chunks
-  chunk_overlap_lines: 20
-
-  # Embedding batch size (1-128)
-  batch_size: 128
-
-  # Parallel embedding requests
-  concurrent_requests: 10
-
-  # Parallel file processing
-  concurrent_files: 4
-
-  # Skip unchanged files on re-index
+  # Skip files whose content hash already exists in the index.
+  # Set to false (or pass --reindex) to force a full re-process.
   incremental: true
-
-# Embedding provider
-embeddings:
-  model: voyage-code-3
-  api_key_env: VOYAGE_API_KEY
-
-# Vector store (points to the Docker Qdrant instance)
-vector_store:
-  url: http://localhost:6333
-  api_key_env: QDRANT_API_KEY
-
-# Metadata store (points to the Docker Postgres instance)
-metadata_store:
-  host: localhost
-  port: 5432
-  database: codebase_intel
-  user_env: CI_PG_USER
-  password_env: CI_PG_PASSWORD
